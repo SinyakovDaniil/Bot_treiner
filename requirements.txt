@@ -1,1 +1,5 @@
-aiogram==3.4.1
+aiogram==3.13.1
+openai==1.52.2
+apscheduler==3.10.4
+matplotlib==3.9.2
+flask==3.0.3  # Только если планируешь вебхуки
