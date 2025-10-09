@@ -79,3 +79,7 @@ ehthumbs.db
 Icon?
 .directory
 .Trashes
+
+# Bot config
+bot_config.json
+config.json

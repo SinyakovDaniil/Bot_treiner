@@ -359,7 +359,7 @@ async def send_training(message: types.Message):
 - Примечание: [если нужно]
 
 Пиши на **русском языке**.
-"""},  # Новый промт
+"""},  # Улучшенный промт
                 {"role": "user", "content": "Создай тренировку."}
             ],
             max_tokens=1000,  # Увеличено
@@ -387,9 +387,10 @@ async def send_training(message: types.Message):
         conn.commit()
 
     except Exception as e:
-        print(f"Ошибка при генерации тренировки: {e}")
-        msg = await message.answer(f"Ошибка при генерации тренировки: {str(e)}")
+        print(f"❌ Ошибка при генерации тренировки: {e}")
+        msg = await message.answer("❌ Ошибка при генерации тренировки. Попробуй позже.")
         add_message_id(user_id, msg.message_id)
+
 
 @dp.message(Command("food"))
 async def send_food(message: types.Message):
@@ -440,7 +441,7 @@ async def send_food(message: types.Message):
 - Полезные напитки: [если нужно]
 
 Пиши на **русском языке**.
-"""},  # Новый промт
+"""},  # Улучшенный промт
                 {"role": "user", "content": "Создай питание."}
             ],
             max_tokens=1000,  # Увеличено
@@ -452,8 +453,8 @@ async def send_food(message: types.Message):
         add_message_id(user_id, msg.message_id)
         await delete_old_messages(user_id)
     except Exception as e:
-        print(f"Ошибка при генерации питания: {e}")
-        msg = await message.answer(f"Ошибка при генерации питания: {str(e)}")
+        print(f"❌ Ошибка при генерации питания: {e}")
+        msg = await message.answer("❌ Ошибка при генерации питания. Попробуй позже.")
         add_message_id(user_id, msg.message_id)
 
 @dp.message(Command("weight"))
