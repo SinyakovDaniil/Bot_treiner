@@ -171,11 +171,11 @@ async def cmd_subscribe(message: types.Message):
         [InlineKeyboardButton(text="1 год - 4999 руб", callback_data="buy_year")],
     ])
     await message.answer("<b>Тарифы подписки:</b>\n\n"
-                         "1 месяц — 499 руб\n"
-                         "6 месяцев — 2499 руб (416 руб/мес)\n"
-                         "1 год — 4999 руб (416 руб/мес)\n\n"
-                         "<a href='https://yourdomain.com/offerta'>Оферта</a>\n\n"
-                         "Выберите тариф:", reply_markup=keyboard)
+                        "1 месяц — 499 руб\n"
+                        "6 месяцев — 2499 руб (416 руб/мес)\n"
+                        "1 год — 4999 руб (416 руб/мес)\n\n"
+                        "<a href='https://yourdomain.com/offerta'>Оферта</a>\n\n"
+                        "Выберите тариф:", reply_markup=keyboard)
 
 @dp.callback_query(lambda c: c.data.startswith('buy_'))
 async def process_subscription_choice(callback_query: types.CallbackQuery):
@@ -350,6 +350,7 @@ async def cmd_training(message: types.Message):
         logger.error(f"Ошибка при генерации тренировки: {e}")
         await message.answer("Ошибка при создании тренировки. Попробуйте позже.")
 
+
 @dp.message(Command("food"))
 async def cmd_food(message: types.Message):
     user_id = message.from_user.id
@@ -450,11 +451,11 @@ async def cmd_profile(message: types.Message):
         sub_info += f"\n(из них {days_left} дней — пробная неделя)"
 
     await message.answer(f"<b>Профиль:</b>\n"
-                         f"Имя: {name}\n"
-                         f"Возраст: {age}\n"
-                         f"Вес: {weight} кг\n"
-                         f"Рост: {height} см\n"
-                         f"Цель: {goal}{sub_info}")
+                        f"Имя: {name}\n"
+                        f"Возраст: {age}\n"
+                        f"Вес: {weight} кг\n"
+                        f"Рост: {height} см\n"
+                        f"Цель: {goal}{sub_info}")
 
 @dp.message(Command("achievements"))
 async def cmd_achievements(message: types.Message):
