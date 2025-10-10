@@ -83,3 +83,11 @@ Icon?
 # Bot config
 bot_config.json
 config.json
+# ... (остальные игноры из старого .gitignore)
+# Environment variables
+.env
+# Database
+trainer_bot.db
+# Virtual environment
+venv/
+env/
