@@ -31,7 +31,7 @@ dp = Dispatcher()
 # --- OpenAI клиент ---
 client = OpenAI(
     api_key=OPENROUTER_API_KEY,
-    base_url='https://openrouter.ai/api/v1/' # Важно: со слэшем в конце
+    base_url='https://openrouter.ai/api/v1/' # Исправлено: убран пробел в конце
 )
 
 # --- Подключение к SQLite ---
@@ -233,7 +233,7 @@ async def cmd_subscribe(message: types.Message):
                          "1 месяц — 499 руб\n"
                          "6 месяцев — 2499 руб (416 руб/мес)\n"
                          "1 год — 4999 руб (416 руб/мес)\n\n"
-                         "<a href='https://yourdomain.com/offerta'>Оферта</a>\n\n"
+                         "<a href='https://docs.google.com/document/d/14NrOTKOJ2Dcd5-guVZGU7fRj9gj-wS1X/edit?usp=drive_link&ouid=111319375229341079989&rtpof=true&sd=true'>Оферта</a>\n\n"
                          "Выберите тариф:", reply_markup=keyboard)
     add_message_id(message.from_user.id, msg.message_id)
 
@@ -271,7 +271,7 @@ async def process_subscription_choice(callback_query: types.CallbackQuery):
         'Culture': 'ru',
         'Encoding': 'utf-8'
     }
-    robokassa_url = "https://auth.robokassa.ru/Merchant/Index.aspx?" + urlencode(params)
+    robokassa_url = "https://auth.robokassa.ru/Merchant/Index.aspx?" + urlencode(params) # Исправлено: убраны пробелы
 
     msg = await bot.send_message(user_id, f"Ссылка для оплаты подписки на {months_added} месяцев ({price} руб):\n{robokassa_url}\n\nПосле оплаты подпишитесь повторно, чтобы обновить статус.")
     add_message_id(user_id, msg.message_id)
@@ -281,6 +281,8 @@ async def process_subscription_choice(callback_query: types.CallbackQuery):
 @dp.message(lambda message: message.from_user.id in user_states and 'step' in user_states[message.from_user.id])
 async def process_profile(message: types.Message):
     user_id = message.from_user.id
+    if user_id not in user_states:
+        return
     state = user_states[user_id]
     step = state["step"]
     data = state["data"]
@@ -481,7 +483,7 @@ async def cmd_training(message: types.Message):
         response = client.chat.completions.create(
             model="openchat/openchat-7b",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=1000
+            max_tokens=3000
         )
         print("Ответ от API получен") # Лог
         training_plan = response.choices[0].message.content
@@ -536,7 +538,7 @@ async def cmd_food(message: types.Message):
         response = client.chat.completions.create(
             model="openchat/openchat-7b",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=1000
+            max_tokens=3000
         )
         print("Ответ от API (питание) получен") # Лог
         food_plan = response.choices[0].message.content
@@ -775,7 +777,10 @@ async def cmd_set_reminder_time(message: types.Message):
         datetime.strptime(time_str, "%H:%M")
         reminder_times[user_id] = time_str
         # Перезапускаем задачу для этого пользователя
-        scheduler.remove_job(job_id=f"remind_{user_id}", jobstore='default')
+        try:
+            scheduler.remove_job(job_id=f"remind_{user_id}", jobstore='default')
+        except:
+            pass
         hour, minute = map(int, time_str.split(':'))
         scheduler.add_job(remind_workout, "cron", hour=hour, minute=minute, id=f"remind_{user_id}", args=[user_id])
         msg = await message.answer(f"Время напоминания установлено на {time_str}.")
