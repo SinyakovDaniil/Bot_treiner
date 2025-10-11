@@ -16,6 +16,7 @@ from flask import Flask, request, render_template, redirect, url_for, session
 import threading
 import os
 import logging
+import traceback # <-- Добавлен для отладки админки
 
 # --- Импортируем конфигурацию ---
 try:
@@ -1035,25 +1036,30 @@ async def main():
 
     # --- Flask приложение для веб-админки (порт 8001) ---
     admin_app = Flask(__name__)
+    admin_app.secret_key = 'your_secret_key_here' # <-- ВАЖНО: замените на случайный ключ
 
     @admin_app.route('/admin', methods=['GET', 'POST'])
     def admin_page():
-        if request.method == 'POST':
-            password = request.form.get('password')
-            if password == ADMIN_PASSWORD:
-                session['authenticated'] = True
-                return redirect(url_for('admin_page'))
-            else:
-                return "❌ Неверный пароль", 403
+        try:
+            if request.method == 'POST':
+                password = request.form.get('password')
+                if password == ADMIN_PASSWORD:
+                    session['authenticated'] = True
+                    return redirect(url_for('admin_page'))
+                else:
+                    return "❌ Неверный пароль", 403
 
-        if not session.get('authenticated'):
-            return render_template('admin.html', authenticated=False)
+            if not session.get('authenticated'):
+                return render_template('admin.html', authenticated=False)
 
-        # Статистика
-        user_count = get_user_count()
-        sub_count = len(get_subscribed_users())
+            # Статистика
+            user_count = get_user_count()
+            sub_count = len(get_subscribed_users())
 
-        return render_template('admin.html', authenticated=True, user_count=user_count, sub_count=sub_count)
+            return render_template('admin.html', authenticated=True, user_count=user_count, sub_count=sub_count)
+        except Exception as e:
+            logger.error(f"Ошибка в admin_page: {e}\n{traceback.format_exc()}")
+            return "❌ Внутренняя ошибка сервера при загрузке админки.", 500
 
     # --- Запуск Flask-серверов в отдельных потоках ---
     def run_webhook():
