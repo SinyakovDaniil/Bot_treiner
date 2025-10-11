@@ -8,26 +8,17 @@
 <body>
     <div class="container">
         <h1>Панель администратора</h1>
-        {% if not authenticated %}
-        <form method="POST" action="/admin">
-            <label for="password">Пароль:</label>
-            <input type="password" id="password" name="password" required>
-            <button type="submit">Войти</button>
-        </form>
-        {% else %}
-        <h2>Добро пожаловать, администратор!</h2>
         <div class="stats">
             <p>Всего пользователей: {{ user_count }}</p>
             <p>Активных подписчиков: {{ sub_count }}</p>
         </div>
         <div class="actions">
             <h3>Действия</h3>
-            <a href="/admin/users" class="btn">Пользователи</a>
-            <a href="/admin/grant" class="btn">Выдать подписку</a>
-            <a href="/admin/revoke" class="btn">Отозвать подписку</a>
-            <a href="/admin/broadcast" class="btn">Рассылка</a>
+            <a href="{{ url_for('admin_users') }}" class="btn">Пользователи</a>
+            <a href="{{ url_for('admin_grant') }}" class="btn">Выдать подписку</a>
+            <a href="{{ url_for('admin_revoke') }}" class="btn">Отозвать подписку</a>
+            <a href="{{ url_for('admin_broadcast') }}" class="btn">Рассылка</a>
         </div>
-        {% endif %}
     </div>
 </body>
 </html>

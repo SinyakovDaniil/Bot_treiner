@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Выдать подписку - Админка</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Выдать подписку</h1>
+        <form method="POST">
+            <label for="user_id">ID пользователя:</label>
+            <input type="number" id="user_id" name="user_id" required>
+            <label for="days">Количество дней:</label>
+            <input type="number" id="days" name="days" min="1" required>
+            <button type="submit">Выдать</button>
+        </form>
+        <a href="{{ url_for('admin_index') }}">Назад</a>
+    </div>
+</body>
+</html>

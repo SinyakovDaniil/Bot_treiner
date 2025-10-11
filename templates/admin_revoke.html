@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Отозвать подписку - Админка</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Отозвать подписку</h1>
+        <form method="POST">
+            <label for="user_id">ID пользователя:</label>
+            <input type="number" id="user_id" name="user_id" required>
+            <button type="submit">Отозвать</button>
+        </form>
+        <a href="{{ url_for('admin_index') }}">Назад</a>
+    </div>
+</body>
+</html>
