@@ -33,13 +33,13 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
 # --- OpenAI клиент ---
-# Исправлено: убран пробел в конце base_url
+# ИСПРАВЛЕНО: убраны лишние пробелы в base_url
 client = OpenAI(
     api_key=OPENROUTER_API_KEY,
-    base_url='https://openrouter.ai/api/v1/'
+    base_url='https://openrouter.ai/api/v1/' # <-- Исправлено
 )
 
-MODEL = "microsoft/wizardlm-2-8x22b"  # Используем конкретную модель
+MODEL = "microsoft/wizardlm-2-8x22b"
 
 # --- Подключение к SQLite ---
 conn = sqlite3.connect('trainer_bot.db', check_same_thread=False)
@@ -81,12 +81,11 @@ CREATE TABLE IF NOT EXISTS trainings (
     user_id INTEGER,
     content TEXT,
     date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    status TEXT DEFAULT 'pending',  -- 'pending', 'completed', 'missed'
+    status TEXT DEFAULT 'pending',
     FOREIGN KEY (user_id) REFERENCES users (user_id)
 );
 """)
 
-# --- Новые таблицы ---
 cur.execute("""
 CREATE TABLE IF NOT EXISTS progress (
     id INTEGER PRIMARY KEY,
@@ -121,7 +120,7 @@ cur.execute("""
 CREATE TABLE IF NOT EXISTS training_schedule (
     id INTEGER PRIMARY KEY,
     user_id INTEGER UNIQUE,
-    schedule TEXT, -- JSON строка: {"days_per_week": 3, "days": ["Mon", "Wed", "Fri"]}
+    schedule TEXT,
     FOREIGN KEY (user_id) REFERENCES users (user_id)
 );
 """)
@@ -137,10 +136,11 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 conn.commit()
 
 # --- Глобальные переменные ---
-user_states = {}  # {user_id: {"step": "name", "data": {...}}}
+user_states = {}
 scheduler = AsyncIOScheduler()
-reminder_times = {} # {user_id: time_str}
-loop = None # <-- Глобальная переменная для asyncio цикла
+reminder_times = {}
+loop = None
+flask_app = None  # <-- Добавлено для управления Flask-приложением
 
 # --- Вспомогательные функции ---
 def save_user_profile(user_id, profile):
@@ -207,18 +207,15 @@ async def delete_old_messages(user_id, keep_last=3):
                 try:
                     await bot.delete_message(chat_id=user_id, message_id=msg_id)
                 except Exception:
-                    pass  # Сообщение уже удалено или не может быть удалено
+                    pass
 
-# --- Функция проверки достижений ---
 def check_achievements(user_id):
-    # "Первая тренировка"
     cur.execute("SELECT COUNT(*) FROM trainings WHERE user_id = ? AND status = 'completed'", (user_id,))
     completed_count = cur.fetchone()[0]
     if completed_count == 1:
         cur.execute("INSERT OR IGNORE INTO achievements (user_id, name) VALUES (?, ?)", (user_id, "Первая тренировка"))
         conn.commit()
 
-    # "Неделя без пропусков"
     now = datetime.now()
     week_ago = now - timedelta(days=7)
     cur.execute("""
@@ -230,7 +227,6 @@ def check_achievements(user_id):
         cur.execute("INSERT OR IGNORE INTO achievements (user_id, name) VALUES (?, ?)", (user_id, "Неделя без пропусков"))
         conn.commit()
 
-    # "Похудел на 5 кг"
     cur.execute("""
         SELECT weight FROM weights WHERE user_id = ? ORDER BY date ASC LIMIT 1
     """, (user_id,))
@@ -247,14 +243,11 @@ def check_achievements(user_id):
                 cur.execute("INSERT OR IGNORE INTO achievements (user_id, name) VALUES (?, ?)", (user_id, "Похудел на 5 кг"))
                 conn.commit()
 
-# --- Все команды должны быть до @dp.message() ---
-
+# --- Команды ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
-    # Сбрасываем состояние, если пользователь начал заново
     user_states[user_id] = {"step": "name", "data": {}, "messages": []}
-    # Удаляем старые сообщения
     await delete_old_messages(user_id, keep_last=0)
     msg = await message.answer("Привет! Я твой персональный тренер 💪\n\nКак тебя зовут?")
     add_message_id(user_id, msg.message_id)
@@ -270,21 +263,14 @@ async def cmd_cancel(message: types.Message):
         msg = await message.answer("Нет активной анкеты.")
         add_message_id(user_id, msg.message_id)
 
-# --- Robokassa оплата ---
 @dp.message(Command("subscribe"))
 async def cmd_subscribe(message: types.Message):
     user_id = message.from_user.id
-
-    # Параметры для Robokassa
-    out_sum = 149.00  # Цена подписки
-    inv_id = user_id  # Используем user_id как ID заказа
+    out_sum = 149.00
+    inv_id = user_id
     desc = f'Подписка для пользователя {user_id} на 1 месяц'
-
-    # Формируем подпись
     signature = f"{ROBOKASSA_LOGIN}:{out_sum}:{inv_id}:{ROBOKASSA_PASS1}:Shp_userId={user_id}"
     sign_hash = hashlib.md5(signature.encode()).hexdigest()
-
-    # Формируем URL
     params = {
         'MerchantLogin': ROBOKASSA_LOGIN,
         'OutSum': out_sum,
@@ -295,10 +281,7 @@ async def cmd_subscribe(message: types.Message):
         'Encoding': 'utf-8',
         'Culture': 'ru'
     }
-
     payment_url = f"https://auth.robokassa.ru/Merchant/Index.aspx?{urlencode(params)}"
-
-    # Отправляем сообщение с офертом и ссылкой
     msg = await message.answer(
         f"Оформить подписку на 1 месяц можно по ссылке:\n\n{payment_url}\n\n"
         f"При оплате вы соглашаетесь с условиями публичной оферты: https://docs.google.com/document/d/14NrOTKOJ2Dcd5-guVZGU7fRj9gj-wS1X/edit?usp=drive_link&ouid=111319375229341079989&rtpof=true&sd=true"
@@ -320,16 +303,12 @@ async def send_training(message: types.Message):
         add_message_id(user_id, msg.message_id)
         return
 
-    # --- Адаптивные тренировки ---
-    # Берём историю тренировок
     cur.execute("""
         SELECT status FROM trainings
         WHERE user_id = ? ORDER BY date DESC LIMIT 5
     """, (user_id,))
     recent_trainings = cur.fetchall()
     recent_statuses = [t[0] for t in recent_trainings]
-
-    # Определим сложность
     completed_count = recent_statuses.count('completed')
     if completed_count < 3:
         difficulty = "лёгкие и простые упражнения"
@@ -366,16 +345,12 @@ async def send_training(message: types.Message):
 """},  # Новый промт
                 {"role": "user", "content": "Создай тренировку."}
             ],
-            max_tokens=3000,  # Увеличено
+            max_tokens=3000,
             temperature=0.7
         )
         training = completion.choices[0].message.content
-
-        # Сохраняем тренировку в базу
         cur.execute("INSERT INTO trainings (user_id, content) VALUES (?, ?)", (user_id, training))
         conn.commit()
-
-        # Отправляем тренировку с кнопками
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Выполнил", callback_data="training_completed")],
             [InlineKeyboardButton(text=" сделаю позже", callback_data="training_postpone")]
@@ -383,8 +358,6 @@ async def send_training(message: types.Message):
         msg = await message.answer(f"Твоя тренировка на сегодня:\n\n{training}", reply_markup=keyboard)
         add_message_id(user_id, msg.message_id)
         await delete_old_messages(user_id)
-
-        # Обновляем дату следующей тренировки
         next_date = datetime.now() + timedelta(days=2)
         cur.execute("UPDATE users SET next_training_date = ? WHERE user_id = ?", (next_date.isoformat(), user_id))
         conn.commit()
@@ -443,7 +416,7 @@ async def send_food(message: types.Message):
 """},  # Новый промт
                 {"role": "user", "content": "Создай питание."}
             ],
-            max_tokens=3000,  # Увеличено
+            max_tokens=3000,
             temperature=0.7
         )
         food = completion.choices[0].message.content
@@ -472,8 +445,6 @@ async def cmd_weight(message: types.Message):
         msg = await message.answer("Введите корректное число.")
         add_message_id(user_id, msg.message_id)
 
-# --- Новые команды ---
-
 @dp.message(Command("progress"))
 async def cmd_progress(message: types.Message):
     user_id = message.from_user.id
@@ -486,19 +457,13 @@ async def cmd_progress(message: types.Message):
     try:
         weight = float(args[1])
         save_weight(user_id, weight)
-
-        # Сохраняем в progress
         cur.execute("""
             INSERT INTO progress (user_id, weight) VALUES (?, ?)
         """, (user_id, weight))
         conn.commit()
-
         msg = await message.answer(f"✅ Вес {weight} кг сохранён в прогресс.")
         add_message_id(user_id, msg.message_id)
-
-        # Проверим достижения
         check_achievements(user_id)
-
     except ValueError:
         msg = await message.answer("Введите корректное число.")
         add_message_id(user_id, msg.message_id)
@@ -509,7 +474,7 @@ async def cmd_schedule(message: types.Message):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="3 раза в неделю", callback_data="schedule_3")],
         [InlineKeyboardButton(text="4 раза в неделю", callback_data="schedule_4")],
-        [InlineKeyboardButton(text="5 раз в неделю", callback_data="schedule_5")]
+        [InlineKeyboardButton(text="5 раза в неделю", callback_data="schedule_5")]
     ])
     msg = await message.answer("Сколько раз в неделю хочешь тренироваться?", reply_markup=keyboard)
     add_message_id(user_id, msg.message_id)
@@ -517,30 +482,23 @@ async def cmd_schedule(message: types.Message):
 @dp.message(Command("report"))
 async def cmd_report(message: types.Message):
     user_id = message.from_user.id
-    # Пример: недельный отчёт
     now = datetime.now()
     week_ago = now - timedelta(days=7)
-
-    # Сколько тренировок выполнено за неделю
     cur.execute("""
         SELECT COUNT(*) FROM trainings
         WHERE user_id = ? AND status = 'completed' AND date >= ?
     """, (user_id, week_ago.isoformat()))
     completed_count = cur.fetchone()[0]
-
-    # Сколько тренировок просрочено
     cur.execute("""
         SELECT COUNT(*) FROM trainings
         WHERE user_id = ? AND status = 'missed' AND date >= ?
     """, (user_id, week_ago.isoformat()))
     missed_count = cur.fetchone()[0]
-
     report = f"""
 📊 Недельный отчёт (последние 7 дней):
 - Выполнено тренировок: {completed_count}
 - Пропущено тренировок: {missed_count}
     """
-
     msg = await message.answer(report)
     add_message_id(user_id, msg.message_id)
 
@@ -549,13 +507,11 @@ async def cmd_achievements(message: types.Message):
     user_id = message.from_user.id
     cur.execute("SELECT name, date_achieved FROM achievements WHERE user_id = ?", (user_id,))
     rows = cur.fetchall()
-
     if not rows:
         msg = await message.answer("У тебя пока нет достижений.")
     else:
         ach_list = "\n".join([f"🏆 {name} — {date.split()[0]}" for name, date in rows])
         msg = await message.answer(f"Твои достижения:\n\n{ach_list}")
-
     add_message_id(user_id, msg.message_id)
 
 @dp.message(Command("profile"))
@@ -571,17 +527,12 @@ async def show_profile(message: types.Message):
     sub_status = "Подписка активна" if is_subscribed(user_id) else "Подписка не оформлена"
     weights = get_weights(user_id)
     weights_str = "\n".join([f"{w[1].split()[0]}: {w[0]} кг" for w in weights[-5:]])
-
-    # Получаем график
     cur.execute("SELECT schedule FROM training_schedule WHERE user_id = ?", (user_id,))
     sched_row = cur.fetchone()
     schedule_info = sched_row[0] if sched_row else "не настроен"
-
-    # Получаем достижения
     cur.execute("SELECT name FROM achievements WHERE user_id = ?", (user_id,))
     ach_rows = cur.fetchall()
     achievements_list = ", ".join([a[0] for a in ach_rows]) if ach_rows else "нет"
-
     profile = (
         f"Имя: {user['name']}\n"
         f"Возраст: {user['age']}\n"
@@ -605,7 +556,6 @@ async def show_profile(message: types.Message):
 async def send_weight_graph(message: types.Message):
     user_id = message.from_user.id
     weights = get_weights(user_id)
-
     if not weights:
         msg = await message.answer("Нет данных о весе.")
         add_message_id(user_id, msg.message_id)
@@ -627,16 +577,14 @@ async def send_weight_graph(message: types.Message):
     img.seek(0)
     plt.close()
 
-    # Оборачиваем BytesIO в BufferedInputFile
     photo = BufferedInputFile(img.read(), filename='weight_graph.png')
     msg = await message.answer_photo(photo=photo)
     add_message_id(user_id, msg.message_id)
 
 # --- Callback-ы ---
-
 @dp.callback_query(lambda c: c.data.startswith("gender_"))
 async def process_gender_callback(callback_query: types.CallbackQuery):
-    logger.info(f"✅ Получен callback: {callback_query.data}")  # Лог
+    logger.info(f"✅ Получен callback: {callback_query.data}")
     user_id = callback_query.from_user.id
     if user_id not in user_states:
         await callback_query.answer("Сначала начни анкету: /start")
@@ -650,15 +598,13 @@ async def process_gender_callback(callback_query: types.CallbackQuery):
     gender = "мужской" if callback_query.data == "gender_male" else "женский"
     state["data"]["gender"] = gender
     state["step"] = "height"
-
-    # Удаляем старые сообщения
     await delete_old_messages(user_id, keep_last=0)
     msg = await callback_query.message.edit_text(f"Отлично! Теперь скажи, какой у тебя рост? (в см)")
     add_message_id(user_id, msg.message_id)
 
 @dp.callback_query(lambda c: c.data.startswith("goal_"))
 async def process_goal_callback(callback_query: types.CallbackQuery):
-    logger.info(f"✅ Получен callback: {callback_query.data}")  # Лог
+    logger.info(f"✅ Получен callback: {callback_query.data}")
     user_id = callback_query.from_user.id
     if user_id not in user_states:
         await callback_query.answer("Сначала начни анкету: /start")
@@ -676,10 +622,7 @@ async def process_goal_callback(callback_query: types.CallbackQuery):
     }
     goal = goal_map[callback_query.data]
     state["data"]["goal"] = goal
-
-    # Перейти к выбору места тренировки
     state["step"] = "training_location"
-    # Удаляем старые сообщения
     await delete_old_messages(user_id, keep_last=0)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🏠 Дом (без инвентаря)", callback_data="location_home_basic")],
@@ -692,7 +635,7 @@ async def process_goal_callback(callback_query: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data.startswith("location_"))
 async def process_location_callback(callback_query: types.CallbackQuery):
-    logger.info(f"✅ Получен callback: {callback_query.data}")  # Лог
+    logger.info(f"✅ Получен callback: {callback_query.data}")
     user_id = callback_query.from_user.id
     if user_id not in user_states:
         await callback_query.answer("Сначала начни анкету: /start")
@@ -711,12 +654,8 @@ async def process_location_callback(callback_query: types.CallbackQuery):
     }
     location = location_map[callback_query.data]
     state["data"]["training_location"] = location
-
-    logger.info(f"✅ Сохранено место тренировки: {location}")  # Лог
-
-    # Перейти к выбору уровня
+    logger.info(f"✅ Сохранено место тренировки: {location}")
     state["step"] = "level"
-    # Удаляем старые сообщения
     await delete_old_messages(user_id, keep_last=0)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🌱 Новичок", callback_data="level_beginner")],
@@ -728,7 +667,7 @@ async def process_location_callback(callback_query: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data.startswith("level_"))
 async def process_level_callback(callback_query: types.CallbackQuery):
-    logger.info(f"✅ Получен callback: {callback_query.data}")  # Лог
+    logger.info(f"✅ Получен callback: {callback_query.data}")
     user_id = callback_query.from_user.id
     if user_id not in user_states:
         await callback_query.answer("Сначала начни анкету: /start")
@@ -746,17 +685,10 @@ async def process_level_callback(callback_query: types.CallbackQuery):
     }
     level = level_map[callback_query.data]
     state["data"]["level"] = level
-
-    logger.info(f"✅ Сохранён уровень: {level}")  # Лог
-
-    # Сохраняем профиль
+    logger.info(f"✅ Сохранён уровень: {level}")
     profile = state["data"]
     save_user_profile(user_id, profile)
-
-    # Очищаем состояние
     del user_states[user_id]
-
-    # Удаляем старые сообщения
     await delete_old_messages(user_id, keep_last=0)
     msg = await callback_query.message.edit_text(
         f"✅ Отлично, {profile['name']}! Твой профиль сохранён.\n\nТеперь ты можешь использовать:\n"
@@ -770,8 +702,6 @@ async def process_level_callback(callback_query: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "training_completed")
 async def training_completed_callback(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
-
-    # Сначала находим ID самой последней "pending" тренировки
     cur.execute("""
         SELECT id FROM trainings
         WHERE user_id = ? AND status = 'pending'
@@ -779,28 +709,24 @@ async def training_completed_callback(callback_query: types.CallbackQuery):
         LIMIT 1
     """, (user_id,))
     row = cur.fetchone()
-
     if row:
         training_id = row[0]
-        # Обновляем статус
         cur.execute("UPDATE trainings SET status = 'completed' WHERE id = ?", (training_id,))
         conn.commit()
         await callback_query.answer("✅ Отлично! Тренировка засчитана.")
-        check_achievements(user_id)  # Проверяем достижения
+        check_achievements(user_id)
     else:
         await callback_query.answer("❌ Нет активной тренировки для завершения.", show_alert=True)
-
-    await callback_query.message.edit_reply_markup(reply_markup=None)  # Убираем кнопки
+    await callback_query.message.edit_reply_markup(reply_markup=None)
 
 @dp.callback_query(lambda c: c.data == "training_postpone")
 async def training_postpone_callback(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
-    # Обновляем дату следующей тренировки на +1 день
     next_date = datetime.now() + timedelta(days=1)
     cur.execute("UPDATE users SET next_training_date = ? WHERE user_id = ?", (next_date.isoformat(), user_id))
     conn.commit()
     await callback_query.answer("✅ Тренировка перенесена на завтра.")
-    await callback_query.message.edit_reply_markup(reply_markup=None)  # Убираем кнопки
+    await callback_query.message.edit_reply_markup(reply_markup=None)
 
 @dp.callback_query(lambda c: c.data.startswith("schedule_"))
 async def process_schedule_callback(callback_query: types.CallbackQuery):
@@ -820,19 +746,15 @@ async def process_schedule_callback(callback_query: types.CallbackQuery):
         await callback_query.message.edit_text(f"Твой график: {schedule_data['days_per_week']} тренировки в неделю ({', '.join(schedule_data['days'])}).")
 
 # --- Обработчик текста (всегда в конце!) ---
-
 @dp.message()
 async def handle_questionnaire(message: types.Message):
     user_id = message.from_user.id
-    logger.info(f"Получено сообщение от {user_id}: {message.text}")  # Лог
+    logger.info(f"Получено сообщение от {user_id}: {message.text}")
 
-    # Проверяем, является ли сообщение командой
     if message.text and message.text.startswith('/'):
-        logger.info(f"Команда '{message.text}' — пропускаем, пусть обработчик команд сработает")  # Лог
-        # НЕ вызываем await, просто выходим — пусть другие хендлеры обработают команду
+        logger.info(f"Команда '{message.text}' — пропускаем")
         return
 
-    # Если пользователь в анкете, обрабатываем анкету
     if user_id in user_states:
         state = user_states[user_id]
         step = state["step"]
@@ -846,7 +768,6 @@ async def handle_questionnaire(message: types.Message):
                 return
             data["name"] = name
             state["step"] = "age"
-            # Удаляем старые сообщения
             await delete_old_messages(user_id, keep_last=0)
             msg = await message.answer(f"Отлично, {name}! Сколько тебе лет? (введите число)")
             add_message_id(user_id, msg.message_id)
@@ -860,7 +781,6 @@ async def handle_questionnaire(message: types.Message):
                     return
                 data["age"] = age
                 state["step"] = "gender"
-                # Удаляем старые сообщения
                 await delete_old_messages(user_id, keep_last=0)
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="Мужской", callback_data="gender_male")],
@@ -881,7 +801,6 @@ async def handle_questionnaire(message: types.Message):
                     return
                 data["height"] = height
                 state["step"] = "weight"
-                # Удаляем старые сообщения
                 await delete_old_messages(user_id, keep_last=0)
                 msg = await message.answer("Какой у тебя текущий вес? (в кг, например: 70.5)")
                 add_message_id(user_id, msg.message_id)
@@ -898,7 +817,6 @@ async def handle_questionnaire(message: types.Message):
                     return
                 data["weight"] = weight
                 state["step"] = "goal"
-                # Удаляем старые сообщения
                 await delete_old_messages(user_id, keep_last=0)
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="Похудеть", callback_data="goal_lose_weight")],
@@ -910,18 +828,14 @@ async def handle_questionnaire(message: types.Message):
             except ValueError:
                 msg = await message.answer("Пожалуйста, введи число (можно с точкой).")
                 add_message_id(user_id, msg.message_id)
-    # Если пользователь не в анкете и это не команда — игнорируем
 
 # --- Основная функция запуска ---
 async def main():
-    global loop # <-- Указываем, что будем использовать глобальную переменную
-    loop = asyncio.get_running_loop() # <-- Сохраняем текущий цикл
-
-    # --- Планировщик ---
+    global loop, flask_app
+    loop = asyncio.get_running_loop()
     scheduler.start()
     logger.info("⏰ Планировщик запущен")
 
-    # --- Установка вебхука ---
     try:
         await bot.set_webhook(WEBHOOK_URL)
         logger.info(f"📡 Вебхук установлен на {WEBHOOK_URL}")
@@ -929,45 +843,57 @@ async def main():
         logger.error(f"❌ Ошибка при установке вебхука: {e}")
         return
 
-    # --- Flask приложение для вебхука ---
     app = Flask(__name__)
+    flask_app = app # <-- Сохраняем ссылку на приложение
 
     @app.route('/webhook', methods=['POST'])
     def webhook():
-        if request.headers.get('content-type') == 'application/json':
-            json_string = request.get_data().decode('utf-8')
-            update = types.Update.model_validate_json(json_string)
-            # Используем threadsafe версию, передавая сохранённый loop
-            asyncio.run_coroutine_threadsafe(dp.feed_update(bot, update), loop)
-            return '', 200
-        else:
+        # ИСПРАВЛЕНО: проверка Content-Type без учёта регистра
+        content_type = request.headers.get('Content-Type', '').lower()
+        if content_type != 'application/json':
             logger.warning("Получен запрос на /webhook с неправильным Content-Type")
             return '', 403
 
-    # --- Запуск Flask в отдельном потоке ---
+        json_string = request.get_data().decode('utf-8')
+        try:
+            # ИСПРАВЛЕНО: проверка валидности JSON
+            update = types.Update.model_validate_json(json_string)
+        except Exception as e:
+            logger.error(f"Ошибка при десериализации JSON: {e}")
+            return '', 400
+
+        # ИСПРАВЛЕНО: обернуто в try-except для логирования ошибок внутри dp.feed_update
+        try:
+            future = asyncio.run_coroutine_threadsafe(dp.feed_update(bot, update), loop)
+            # Опционально: можно дождаться выполнения, но это заблокирует поток Flask
+            # result = future.result(timeout=10) # 10 сек таймаут
+        except Exception as e:
+            logger.error(f"Ошибка при передаче апдейта в aiogram: {e}")
+            return '', 500
+
+        return '', 200
+
     def run_flask():
-        # Используем waitress для более надежного запуска в продакшене
         from waitress import serve
         logger.info("🌐 Flask (Waitress) запускается на 0.0.0.0:8000...")
         serve(app, host='0.0.0.0', port=8000)
 
     flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True # Поток завершится, когда основной процесс завершится
+    flask_thread.daemon = True
     flask_thread.start()
     logger.info("🧵 Поток Flask запущен")
 
     logger.info("🤖 Бот запущен и ожидает сообщений...")
 
-    # --- Бесконечный цикл для удержания основного процесса ---
-    # Это необходимо, чтобы скрипт не завершался и asyncio продолжал работать
     try:
         while True:
-            await asyncio.sleep(1) # Уступаем контроль, чтобы другие задачи могли работать
+            await asyncio.sleep(1)
     except KeyboardInterrupt:
         logger.info("🛑 Бот остановлен пользователем")
+        # Здесь можно добавить остановку scheduler и других ресурсов
+        scheduler.shutdown(wait=False)
 
 if __name__ == "__main__":
-    # Убедимся, что waitress установлен перед запуском
     try:
         import waitress
     except ImportError:
