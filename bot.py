@@ -924,10 +924,10 @@ async def main():
         logger.error(f"❌ Ошибка при установке вебхука: {e}")
         return
 
-    app = Flask(__name__)
-    flask_app = app
+    # --- Flask приложение для вебхука (порт 8000) ---
+    webhook_app = Flask(__name__)
 
-    @app.route('/webhook', methods=['POST'])
+    @webhook_app.route('/webhook', methods=['POST'])
     def webhook():
         content_type = request.headers.get('Content-Type', '').lower()
         if content_type != 'application/json':
@@ -949,8 +949,10 @@ async def main():
 
         return '', 200
 
-    # --- Веб-админка ---
-    @app.route('/admin', methods=['GET', 'POST'])
+    # --- Flask приложение для веб-админки (порт 8001) ---
+    admin_app = Flask(__name__)
+
+    @admin_app.route('/admin', methods=['GET', 'POST'])
     def admin_page():
         if request.method == 'POST':
             password = request.form.get('password')
@@ -969,15 +971,27 @@ async def main():
 
         return render_template('admin.html', authenticated=True, user_count=user_count, sub_count=sub_count)
 
-    def run_flask():
+    # --- Запуск Flask-серверов в отдельных потоках ---
+    def run_webhook():
         from waitress import serve
-        logger.info("🌐 Flask (Waitress) запускается на 0.0.0.0:8001...")
-        serve(app, host='0.0.0.0', port=8001)
+        logger.info("🌐 Flask (Waitress) вебхука запускается на 0.0.0.0:8000...")
+        serve(webhook_app, host='0.0.0.0', port=8000)
 
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-    logger.info("🧵 Поток Flask запущен")
+    def run_admin():
+        from waitress import serve
+        logger.info("🌐 Flask (Waitress) админки запускается на 0.0.0.0:8001...")
+        serve(admin_app, host='0.0.0.0', port=8001)
+
+    webhook_thread = threading.Thread(target=run_webhook)
+    admin_thread = threading.Thread(target=run_admin)
+
+    webhook_thread.daemon = True
+    admin_thread.daemon = True
+
+    webhook_thread.start()
+    admin_thread.start()
+
+    logger.info("🧵 Потоки Flask запущены")
 
     logger.info("🤖 Бот запущен и ожидает сообщений...")
 
@@ -987,6 +1001,7 @@ async def main():
     except KeyboardInterrupt:
         logger.info("🛑 Бот остановлен пользователем")
         scheduler.shutdown(wait=False)
+
 
 if __name__ == "__main__":
     try:
