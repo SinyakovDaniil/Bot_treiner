@@ -18,7 +18,11 @@ import os
 import logging
 
 # --- Импортируем конфигурацию ---
-from config import API_TOKEN, OPENROUTER_API_KEY, ROBOKASSA_LOGIN, ROBOKASSA_PASS1, ROBOKASSA_PASS2, WEBHOOK_URL, ADMIN_PASSWORD
+try:
+    from config import API_TOKEN, OPENROUTER_API_KEY, ROBOKASSA_LOGIN, ROBOKASSA_PASS1, ROBOKASSA_PASS2, WEBHOOK_URL, ADMIN_PASSWORD
+except ImportError:
+    print("❌ Файл config.py не найден или не содержит всех необходимых переменных.")
+    exit(1)
 
 # --- Настройка логирования ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -29,10 +33,13 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
 # --- OpenAI клиент ---
+# Исправлено: убран пробел в конце base_url
 client = OpenAI(
     api_key=OPENROUTER_API_KEY,
-    base_url='https://openrouter.ai/api/v1/' # Исправлено: убран пробел в конце
+    base_url='https://openrouter.ai/api/v1/'
 )
+
+MODEL = "microsoft/wizardlm-2-8x22b"  # Используем конкретную модель
 
 # --- Подключение к SQLite ---
 conn = sqlite3.connect('trainer_bot.db', check_same_thread=False)
@@ -42,128 +49,155 @@ cur = conn.cursor()
 cur.execute("""
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
+    user_id INTEGER UNIQUE,
     name TEXT,
     age INTEGER,
+    gender TEXT,
+    height INTEGER,
     weight REAL,
-    height REAL,
     goal TEXT,
-    subscription_end_date TEXT DEFAULT NULL,
-    trial_used BOOLEAN DEFAULT FALSE,
-    last_weight_entry TEXT DEFAULT NULL,
-    gender TEXT DEFAULT NULL,
-    training_location TEXT DEFAULT NULL,
-    level TEXT DEFAULT NULL
-)
+    training_location TEXT,
+    level TEXT,
+    last_training_date TIMESTAMP,
+    next_training_date TIMESTAMP,
+    reminder_time TEXT DEFAULT '08:00',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """)
 
 cur.execute("""
-CREATE TABLE IF NOT EXISTS progress (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+CREATE TABLE IF NOT EXISTS weights (
+    id INTEGER PRIMARY KEY,
     user_id INTEGER,
     weight REAL,
-    date TEXT,
-    FOREIGN KEY (user_id) REFERENCES users (id)
-)
+    date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users (user_id)
+);
+""")
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS trainings (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER,
+    content TEXT,
+    date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    status TEXT DEFAULT 'pending',  -- 'pending', 'completed', 'missed'
+    FOREIGN KEY (user_id) REFERENCES users (user_id)
+);
+""")
+
+# --- Новые таблицы ---
+cur.execute("""
+CREATE TABLE IF NOT EXISTS progress (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER,
+    date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    weight REAL,
+    chest REAL,
+    waist REAL,
+    hips REAL,
+    arms REAL,
+    shoulders REAL,
+    thighs REAL,
+    calves REAL,
+    squat REAL,
+    bench REAL,
+    deadlift REAL,
+    FOREIGN KEY (user_id) REFERENCES users (user_id)
+);
 """)
 
 cur.execute("""
 CREATE TABLE IF NOT EXISTS achievements (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY,
     user_id INTEGER,
-    title TEXT,
-    description TEXT,
-    unlocked_date TEXT,
-    FOREIGN KEY (user_id) REFERENCES users (id)
-)
+    name TEXT,
+    date_achieved TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users (user_id)
+);
 """)
 
 cur.execute("""
-CREATE TABLE IF NOT EXISTS training_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    date TEXT,
-    status TEXT, -- 'completed', 'skipped', 'scheduled'
-    FOREIGN KEY (user_id) REFERENCES users (id)
-)
+CREATE TABLE IF NOT EXISTS training_schedule (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER UNIQUE,
+    schedule TEXT, -- JSON строка: {"days_per_week": 3, "days": ["Mon", "Wed", "Fri"]}
+    FOREIGN KEY (user_id) REFERENCES users (user_id)
+);
 """)
 
+cur.execute("""
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER UNIQUE,
+    expires_at TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users (user_id)
+);
+""")
 conn.commit()
 
 # --- Глобальные переменные ---
-user_states = {}
+user_states = {}  # {user_id: {"step": "name", "data": {...}}}
 scheduler = AsyncIOScheduler()
 reminder_times = {} # {user_id: time_str}
 loop = None # <-- Глобальная переменная для asyncio цикла
 
 # --- Вспомогательные функции ---
+def save_user_profile(user_id, profile):
+    cur.execute("""
+        INSERT OR REPLACE INTO users (user_id, name, age, gender, height, weight, goal, training_location, level)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (user_id, profile['name'], profile['age'], profile['gender'], profile['height'], profile['weight'], profile['goal'], profile.get('training_location', ''), profile.get('level', '')))
+    conn.commit()
+
+def save_weight(user_id, weight):
+    cur.execute("INSERT INTO weights (user_id, weight) VALUES (?, ?)", (user_id, weight))
+    conn.commit()
+
+def get_weights(user_id):
+    cur.execute("SELECT weight, date FROM weights WHERE user_id = ? ORDER BY date", (user_id,))
+    return cur.fetchall()
+
 def get_user_profile(user_id):
-    cur.execute("SELECT name, age, weight, height, goal, gender, training_location, level FROM users WHERE id = ?", (user_id,))
+    cur.execute("SELECT name, age, gender, height, weight, goal, training_location, level, next_training_date, reminder_time FROM users WHERE user_id = ?", (user_id,))
     row = cur.fetchone()
     if row:
         return {
             "name": row[0],
             "age": row[1],
-            "weight": row[2],
+            "gender": row[2],
             "height": row[3],
-            "goal": row[4],
-            "gender": row[5],
+            "weight": row[4],
+            "goal": row[5],
             "training_location": row[6],
-            "level": row[7]
+            "level": row[7],
+            "next_training_date": row[8],
+            "reminder_time": row[9]
         }
     return None
 
 def is_subscribed(user_id):
-    cur.execute("SELECT subscription_end_date FROM users WHERE id = ?", (user_id,))
-    result = cur.fetchone()
-    if result and result[0]:
-        sub_end = datetime.fromisoformat(result[0])
-        now = datetime.now()
-        return now < sub_end
+    cur.execute("SELECT expires_at FROM subscriptions WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    if row:
+        expires_at = datetime.fromisoformat(row[0])
+        return datetime.now() < expires_at
     return False
 
-def get_trial_days_left(user_id):
-    cur.execute("SELECT trial_used, subscription_end_date FROM users WHERE id = ?", (user_id,))
-    result = cur.fetchone()
-    if result:
-        trial_used, sub_end_str = result
-        if trial_used and sub_end_str:
-            sub_end = datetime.fromisoformat(sub_end_str)
-            now = datetime.now()
-            if now < sub_end:
-                delta = sub_end - now
-                return delta.days + 1
-    return 0
-
-def add_achievement(user_id, title, description):
-    now = datetime.now().isoformat()
-    cur.execute("INSERT INTO achievements (user_id, title, description, unlocked_date) VALUES (?, ?, ?, ?)",
-                (user_id, title, description, now))
+def add_subscription(user_id, months=1):
+    expires_at = datetime.now() + timedelta(days=30 * months)
+    cur.execute("""
+        INSERT OR REPLACE INTO subscriptions (user_id, expires_at)
+        VALUES (?, ?)
+    """, (user_id, expires_at.isoformat()))
     conn.commit()
 
-def check_and_award_achievements(user_id, profile):
-    # Пример: достижение за заполнение анкеты
-    if profile and profile.get("name"):
-        cur.execute("SELECT id FROM achievements WHERE user_id = ? AND title = ?", (user_id, "Первые шаги"))
-        if cur.fetchone() is None:
-            add_achievement(user_id, "Первые шаги", "Заполнил анкету и начал путь к здоровью!")
-
-def save_training_log(user_id, date_str, status):
-    cur.execute("INSERT INTO training_logs (user_id, date, status) VALUES (?, ?, ?)",
-                (user_id, date_str, status))
-    conn.commit()
-
-def get_recent_training_status(user_id, days=3):
-    since_date = datetime.now() - timedelta(days=days)
-    cur.execute("SELECT status FROM training_logs WHERE user_id = ? AND date >= ? ORDER BY date DESC", (user_id, since_date.isoformat()))
-    return [row[0] for row in cur.fetchall()]
-
-def add_message_id(user_id, message_id):
-    # Простая реализация: хранение в памяти. Для продакшена лучше в БД.
+def add_message_id(user_id, msg_id):
     if user_id not in user_states:
         user_states[user_id] = {"messages": []}
-    user_states[user_id]["messages"].append(message_id)
+    user_states[user_id]["messages"].append(msg_id)
 
-async def delete_old_messages(user_id, keep_last=1):
+async def delete_old_messages(user_id, keep_last=3):
     if user_id in user_states and "messages" in user_states[user_id]:
         messages = user_states[user_id]["messages"]
         if len(messages) > keep_last:
@@ -172,675 +206,711 @@ async def delete_old_messages(user_id, keep_last=1):
             for msg_id in to_delete:
                 try:
                     await bot.delete_message(chat_id=user_id, message_id=msg_id)
-                except Exception as e:
-                    logger.warning(f"Could not delete message {msg_id} for user {user_id}: {e}")
+                except Exception:
+                    pass  # Сообщение уже удалено или не может быть удалено
 
-# --- Обработчики команд ---
+# --- Функция проверки достижений ---
+def check_achievements(user_id):
+    # "Первая тренировка"
+    cur.execute("SELECT COUNT(*) FROM trainings WHERE user_id = ? AND status = 'completed'", (user_id,))
+    completed_count = cur.fetchone()[0]
+    if completed_count == 1:
+        cur.execute("INSERT OR IGNORE INTO achievements (user_id, name) VALUES (?, ?)", (user_id, "Первая тренировка"))
+        conn.commit()
+
+    # "Неделя без пропусков"
+    now = datetime.now()
+    week_ago = now - timedelta(days=7)
+    cur.execute("""
+        SELECT COUNT(*) FROM trainings
+        WHERE user_id = ? AND status = 'completed' AND date >= ?
+    """, (user_id, week_ago.isoformat()))
+    week_completed = cur.fetchone()[0]
+    if week_completed >= 7:
+        cur.execute("INSERT OR IGNORE INTO achievements (user_id, name) VALUES (?, ?)", (user_id, "Неделя без пропусков"))
+        conn.commit()
+
+    # "Похудел на 5 кг"
+    cur.execute("""
+        SELECT weight FROM weights WHERE user_id = ? ORDER BY date ASC LIMIT 1
+    """, (user_id,))
+    first_weight_row = cur.fetchone()
+    if first_weight_row:
+        first_weight = first_weight_row[0]
+        cur.execute("""
+            SELECT weight FROM weights WHERE user_id = ? ORDER BY date DESC LIMIT 1
+        """, (user_id,))
+        latest_weight_row = cur.fetchone()
+        if latest_weight_row:
+            latest_weight = latest_weight_row[0]
+            if first_weight - latest_weight >= 5:
+                cur.execute("INSERT OR IGNORE INTO achievements (user_id, name) VALUES (?, ?)", (user_id, "Похудел на 5 кг"))
+                conn.commit()
+
+# --- Все команды должны быть до @dp.message() ---
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
-    username = message.from_user.first_name
+    # Сбрасываем состояние, если пользователь начал заново
+    user_states[user_id] = {"step": "name", "data": {}, "messages": []}
+    # Удаляем старые сообщения
+    await delete_old_messages(user_id, keep_last=0)
+    msg = await message.answer("Привет! Я твой персональный тренер 💪\n\nКак тебя зовут?")
+    add_message_id(user_id, msg.message_id)
 
-    # Проверяем, есть ли пользователь в базе
-    cur.execute("SELECT id, trial_used FROM users WHERE id = ?", (user_id,))
-    result = cur.fetchone()
-
-    if not result:
-        # Новый пользователь
-        logger.info(f"Новый пользователь: {user_id} ({username})")
-        cur.execute("INSERT INTO users (id, name) VALUES (?, ?)", (user_id, username))
-        conn.commit()
-
-        # Выдаём пробную неделю, если не использовалась
-        cur.execute("SELECT trial_used FROM users WHERE id = ?", (user_id,))
-        trial_used_result = cur.fetchone()
-        if not trial_used_result or not trial_used_result[0]:
-            trial_end_date = datetime.now() + timedelta(days=7)
-            cur.execute("UPDATE users SET trial_used = TRUE, subscription_end_date = ? WHERE id = ?", (trial_end_date.isoformat(), user_id))
-            conn.commit()
-            logger.info(f"Выдана пробная неделя пользователю {user_id}")
-            msg = await message.answer("Привет! 🏋️‍♂️ Я твой ИИ-тренер. Ты получил <b>бесплатную неделю подписки</b>! Для начала, давай заполним анкету. Как тебя зовут?")
-            add_message_id(user_id, msg.message_id)
-            user_states[user_id] = {"step": "name", "data": {}}
-        else:
-            msg = await message.answer("Привет! 🏋️‍♂️ Я твой ИИ-тренер. Для начала, давай заполним анкету. Как тебя зовут?")
-            add_message_id(user_id, msg.message_id)
-            user_states[user_id] = {"step": "name", "data": {}}
+@dp.message(Command("cancel"))
+async def cmd_cancel(message: types.Message):
+    user_id = message.from_user.id
+    if user_id in user_states:
+        del user_states[user_id]
+        msg = await message.answer("Анкета отменена. Используй /start, чтобы начать заново.")
+        add_message_id(user_id, msg.message_id)
     else:
-        # Старый пользователь
-        logger.info(f"Старый пользователь: {user_id} ({username})")
-        msg = await message.answer("Привет! 🏋️‍♂️ С возвращением! Используй /menu для навигации.")
+        msg = await message.answer("Нет активной анкеты.")
         add_message_id(user_id, msg.message_id)
 
+# --- Robokassa оплата ---
 @dp.message(Command("subscribe"))
 async def cmd_subscribe(message: types.Message):
-    if is_subscribed(message.from_user.id):
-        days_left = get_trial_days_left(message.from_user.id)
-        sub_end = datetime.fromisoformat(cur.execute("SELECT subscription_end_date FROM users WHERE id = ?", (message.from_user.id,)).fetchone()[0])
-        msg = await message.answer(f"У вас активна подписка до {sub_end.strftime('%d.%m.%Y')}.")
-        add_message_id(message.from_user.id, msg.message_id)
-        if days_left > 0:
-            msg = await message.answer(f"Из них <b>{days_left} дней</b> — осталось от пробной недели.")
-            add_message_id(message.from_user.id, msg.message_id)
-        return
+    user_id = message.from_user.id
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="1 месяц - 499 руб", callback_data="buy_month")],
-        [InlineKeyboardButton(text="6 месяцев - 2499 руб", callback_data="buy_half_year")],
-        [InlineKeyboardButton(text="1 год - 4999 руб", callback_data="buy_year")],
-    ])
-    msg = await message.answer("<b>Тарифы подписки:</b>\n\n"
-                         "1 месяц — 499 руб\n"
-                         "6 месяцев — 2499 руб (416 руб/мес)\n"
-                         "1 год — 4999 руб (416 руб/мес)\n\n"
-                         "<a href='https://docs.google.com/document/d/14NrOTKOJ2Dcd5-guVZGU7fRj9gj-wS1X/edit?usp=drive_link&ouid=111319375229341079989&rtpof=true&sd=true'>Оферта</a>\n\n"
-                         "Выберите тариф:", reply_markup=keyboard)
-    add_message_id(message.from_user.id, msg.message_id)
+    # Параметры для Robokassa
+    out_sum = 149.00  # Цена подписки
+    inv_id = user_id  # Используем user_id как ID заказа
+    desc = f'Подписка для пользователя {user_id} на 1 месяц'
 
-@dp.callback_query(lambda c: c.data.startswith('buy_'))
-async def process_subscription_choice(callback_query: types.CallbackQuery):
-    user_id = callback_query.from_user.id
-    choice = callback_query.data
+    # Формируем подпись
+    signature = f"{ROBOKASSA_LOGIN}:{out_sum}:{inv_id}:{ROBOKASSA_PASS1}:Shp_userId={user_id}"
+    sign_hash = hashlib.md5(signature.encode()).hexdigest()
 
-    prices = {
-        "buy_month": 499,
-        "buy_half_year": 2499,
-        "buy_year": 4999
-    }
-    months = {
-        "buy_month": 1,
-        "buy_half_year": 6,
-        "buy_year": 12
-    }
-
-    price = prices[choice]
-    months_added = months[choice]
-
-    # Подготовка параметров для Robokassa
-    inv_id = user_id # Можно использовать ID пользователя как InvoiceID
-    desc = f"Подписка на {months_added} месяцев"
-    signature = hashlib.md5(f"{ROBOKASSA_LOGIN}:{price}:{inv_id}:{ROBOKASSA_PASS1}:shp_userid={user_id}".encode()).hexdigest()
-
+    # Формируем URL
     params = {
         'MerchantLogin': ROBOKASSA_LOGIN,
-        'OutSum': price,
+        'OutSum': out_sum,
         'InvId': inv_id,
         'Desc': desc,
-        'SignatureValue': signature,
-        'Shp_userid': user_id,
-        'Culture': 'ru',
-        'Encoding': 'utf-8'
+        'SignatureValue': sign_hash,
+        'Shp_userId': user_id,
+        'Encoding': 'utf-8',
+        'Culture': 'ru'
     }
-    robokassa_url = "https://auth.robokassa.ru/Merchant/Index.aspx?" + urlencode(params) # Исправлено: убраны пробелы
 
-    msg = await bot.send_message(user_id, f"Ссылка для оплаты подписки на {months_added} месяцев ({price} руб):\n{robokassa_url}\n\nПосле оплаты подпишитесь повторно, чтобы обновить статус.")
+    payment_url = f"https://auth.robokassa.ru/Merchant/Index.aspx?{urlencode(params)}"
+
+    # Отправляем сообщение с офертом и ссылкой
+    msg = await message.answer(
+        f"Оформить подписку на 1 месяц можно по ссылке:\n\n{payment_url}\n\n"
+        f"При оплате вы соглашаетесь с условиями публичной оферты: https://docs.google.com/document/d/14NrOTKOJ2Dcd5-guVZGU7fRj9gj-wS1X/edit?usp=drive_link&ouid=111319375229341079989&rtpof=true&sd=true"
+    )
     add_message_id(user_id, msg.message_id)
-    await callback_query.answer()
 
-# --- Обработчики анкеты ---
-@dp.message(lambda message: message.from_user.id in user_states and 'step' in user_states[message.from_user.id])
-async def process_profile(message: types.Message):
-    user_id = message.from_user.id
-    if user_id not in user_states:
-        return
-    state = user_states[user_id]
-    step = state["step"]
-    data = state["data"]
-
-    if step == "name":
-        name = message.text.strip()
-        if len(name) < 2:
-            msg = await message.answer("Пожалуйста, введи настоящее имя (минимум 2 символа).")
-            add_message_id(user_id, msg.message_id)
-            return
-        data["name"] = name
-        state["step"] = "age"
-        msg = await message.answer(f"Отлично, {name}! Сколько тебе лет? (введите число)")
-        add_message_id(user_id, msg.message_id)
-        await delete_old_messages(user_id, keep_last=0)
-
-    elif step == "age":
-        try:
-            age = int(message.text.strip())
-            if age < 10 or age > 100:
-                msg = await message.answer("Пожалуйста, введи реальный возраст (от 10 до 100).")
-                add_message_id(user_id, msg.message_id)
-                return
-            data["age"] = age
-            state["step"] = "gender"
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Мужской", callback_data="gender_male")],
-                [InlineKeyboardButton(text="Женский", callback_data="gender_female")]
-            ])
-            msg = await message.answer("Какой у тебя пол?", reply_markup=keyboard)
-            add_message_id(user_id, msg.message_id)
-            await delete_old_messages(user_id, keep_last=0)
-        except ValueError:
-            msg = await message.answer("Пожалуйста, введи число.")
-            add_message_id(user_id, msg.message_id)
-
-    elif step == "weight":
-        try:
-            weight = float(message.text.strip().replace(',', '.'))
-            if weight < 30 or weight > 300:
-                msg = await message.answer("Пожалуйста, введи реальный вес (от 30 до 300 кг).")
-                add_message_id(user_id, msg.message_id)
-                return
-            data["weight"] = weight
-            state["step"] = "height"
-            msg = await message.answer("Какой у тебя рост (в см)?")
-            add_message_id(user_id, msg.message_id)
-            await delete_old_messages(user_id, keep_last=0)
-        except ValueError:
-            msg = await message.answer("Пожалуйста, введи число (можно с точкой).")
-            add_message_id(user_id, msg.message_id)
-
-    elif step == "height":
-        try:
-            height = int(message.text.strip())
-            if height < 100 or height > 250:
-                msg = await message.answer("Пожалуйста, введи реальный рост в см (от 100 до 250).")
-                add_message_id(user_id, msg.message_id)
-                return
-            data["height"] = height
-            state["step"] = "goal"
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Похудеть", callback_data="goal_lose_weight")],
-                [InlineKeyboardButton(text="Набрать массу", callback_data="goal_gain_muscle")],
-                [InlineKeyboardButton(text="Поддерживать", callback_data="goal_maintain")]
-            ])
-            msg = await message.answer("Какая у тебя цель?", reply_markup=keyboard)
-            add_message_id(user_id, msg.message_id)
-            await delete_old_messages(user_id, keep_last=0)
-        except ValueError:
-            msg = await message.answer("Пожалуйста, введи число.")
-            add_message_id(user_id, msg.message_id)
-
-# --- Обработка callback'ов анкеты ---
-@dp.callback_query(lambda c: c.data in ['gender_male', 'gender_female', 'goal_lose_weight', 'goal_gain_muscle', 'goal_maintain'])
-async def process_profile_callback(callback_query: types.CallbackQuery):
-    user_id = callback_query.from_user.id
-    if user_id not in user_states or 'step' not in user_states[user_id]:
-        await callback_query.answer("Сначала заполните анкету.")
-        return
-
-    state = user_states[user_id]
-    step = state["step"]
-    data = state["data"]
-
-    if step == "gender":
-        data["gender"] = "мужской" if callback_query.data == "gender_male" else "женский"
-        state["step"] = "weight"
-        msg = await callback_query.message.edit_text("Какой у тебя вес (в кг)?")
-        add_message_id(user_id, msg.message_id)
-        await delete_old_messages(user_id, keep_last=0)
-
-    elif step == "goal":
-        goals = {
-            "goal_lose_weight": "Похудеть",
-            "goal_gain_muscle": "Набрать массу",
-            "goal_maintain": "Поддерживать"
-        }
-        data["goal"] = goals[callback_query.data]
-        state["step"] = "training_location"
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Дома", callback_data="location_home")],
-            [InlineKeyboardButton(text="В спортзале", callback_data="location_gym")],
-            [InlineKeyboardButton(text="На улице", callback_data="location_outdoor")]
-        ])
-        msg = await callback_query.message.edit_text("Где ты обычно тренируешься?", reply_markup=keyboard)
-        add_message_id(user_id, msg.message_id)
-        await delete_old_messages(user_id, keep_last=0)
-
-    elif step == "training_location":
-        locations = {
-            "location_home": "Дома",
-            "location_gym": "В спортзале",
-            "location_outdoor": "На улице"
-        }
-        data["training_location"] = locations[callback_query.data]
-        state["step"] = "level"
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Новичок", callback_data="level_beginner")],
-            [InlineKeyboardButton(text="Средний", callback_data="level_intermediate")],
-            [InlineKeyboardButton(text="Продвинутый", callback_data="level_advanced")]
-        ])
-        msg = await callback_query.message.edit_text("Какой у тебя уровень подготовки?", reply_markup=keyboard)
-        add_message_id(user_id, msg.message_id)
-        await delete_old_messages(user_id, keep_last=0)
-
-    elif step == "level":
-        levels = {
-            "level_beginner": "Новичок",
-            "level_intermediate": "Средний",
-            "level_advanced": "Продвинутый"
-        }
-        data["level"] = levels[callback_query.data]
-
-        # Сохраняем данные в базу
-        cur.execute("""
-            UPDATE users SET name=?, age=?, gender=?, weight=?, height=?, goal=?, training_location=?, level=? WHERE id = ?
-        """, (data["name"], data["age"], data["gender"], data["weight"], data["height"], data["goal"], data["training_location"], data["level"], user_id))
-        conn.commit()
-
-        # Удаляем пользователя из состояний
-        if user_id in user_states:
-            del user_states[user_id]
-
-        # Проверяем и выдаём достижение
-        profile = get_user_profile(user_id)
-        check_and_award_achievements(user_id, profile)
-
-        msg = await callback_query.message.edit_text(
-            f"Анкета заполнена! Имя: {data['name']}, Возраст: {data['age']}, Пол: {data['gender']}, Вес: {data['weight']} кг, Рост: {data['height']} см, Цель: {data['goal']}, Место: {data['training_location']}, Уровень: {data['level']}. Используй /menu для навигации."
-        )
-        add_message_id(user_id, msg.message_id)
-
-# --- Остальные команды (требуют подписки) ---
 @dp.message(Command("training"))
-async def cmd_training(message: types.Message):
+async def send_training(message: types.Message):
+    logger.info(f"Получена команда /training от {message.from_user.id}")
     user_id = message.from_user.id
+    user = get_user_profile(user_id)
+    if not user:
+        msg = await message.answer("Сначала пройди анкету: /start")
+        add_message_id(user_id, msg.message_id)
+        return
+
     if not is_subscribed(user_id):
-        msg = await message.answer("Для доступа к тренировкам нужна подписка. /subscribe")
+        msg = await message.answer("🔒 Эта функция доступна только по подписке. Используй /subscribe, чтобы оформить.")
         add_message_id(user_id, msg.message_id)
         return
 
-    profile = get_user_profile(user_id)
-    if not profile:
-        msg = await message.answer("Сначала заполните анкету /start")
-        add_message_id(user_id, msg.message_id)
-        return
+    # --- Адаптивные тренировки ---
+    # Берём историю тренировок
+    cur.execute("""
+        SELECT status FROM trainings
+        WHERE user_id = ? ORDER BY date DESC LIMIT 5
+    """, (user_id,))
+    recent_trainings = cur.fetchall()
+    recent_statuses = [t[0] for t in recent_trainings]
 
-    print("✅ Сработал обработчик /training") # Лог
-    print(f"Профиль пользователя: {profile}") # Лог
-    print(f"Подписка: {is_subscribed(user_id)}") # Лог
-
-    # Определяем сложность на основе прогресса
-    recent_statuses = get_recent_training_status(user_id, days=3)
+    # Определим сложность
     completed_count = recent_statuses.count('completed')
     if completed_count < 3:
         difficulty = "лёгкие и простые упражнения"
     else:
         difficulty = "средние или сложные упражнения"
 
-    prompt = f"""
-    Ты ИИ-тренер. Создай индивидуальную тренировку на 1 день для человека:
-    - Имя: {profile['name']}
-    - Пол: {profile['gender']}
-    - Возраст: {profile['age']}
-    - Вес: {profile['weight']} кг
-    - Рост: {profile['height']} см
-    - Цель: {profile['goal']}
-    - Место тренировки: {profile['training_location']}
-    - Уровень подготовки: {profile['level']}
-    - Тренировка должна быть {difficulty} и подходящей для указанного пола и возраста.
-    - Длительность: 30-45 минут.
-    Верни ПЛАН ТРЕНИРОВКИ в виде нумерованного списка упражнений с описанием, количеством подходов/повторений и отдыхом между.
-    """
-
     try:
-        print("Отправляем запрос к API...") # Лог
-        response = client.chat.completions.create(
-            model="openchat/openchat-7b",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=3000
+        completion = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": f"""
+Ты — персональный фитнес-тренер. Составь **индивидуальную тренировку на один день** для пользователя:
+
+- Имя: {user['name']}
+- Пол: {user['gender']}
+- Возраст: {user['age']} лет
+- Рост: {user['height']} см
+- Вес: {user['weight']} кг
+- Цель: {user['goal']}
+- Место тренировки: {user['training_location'] or 'не указано'}
+- Уровень: {user['level'] or 'не указан'}
+- Сложность: {difficulty}
+
+Тренировка должна быть **безопасной**, **эффективной**, **сбалансированной** и **подходящей для указанного пола и возраста**.
+
+Формат ответа:
+- Упражнение: [название]
+- Подходы: [число]
+- Повторы: [число]
+- Вес: [рекомендуемый вес в кг, если нужно]
+- Примечание: [если нужно]
+
+Пиши на **русском языке**.
+"""},  # Новый промт
+                {"role": "user", "content": "Создай тренировку."}
+            ],
+            max_tokens=3000,  # Увеличено
+            temperature=0.7
         )
-        print("Ответ от API получен") # Лог
-        training_plan = response.choices[0].message.content
-        msg = await message.answer(f"<b>Ваша тренировка на сегодня:</b>\n\n{training_plan}")
-        add_message_id(user_id, msg.message_id)
+        training = completion.choices[0].message.content
 
-        # Логируем запланированную тренировку
-        today = datetime.now().date().isoformat()
-        save_training_log(user_id, today, 'scheduled')
+        # Сохраняем тренировку в базу
+        cur.execute("INSERT INTO trainings (user_id, content) VALUES (?, ?)", (user_id, training))
+        conn.commit()
 
+        # Отправляем тренировку с кнопками
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Выполнил", callback_data=f"training_completed_{today}")],
-            [InlineKeyboardButton(text=" сделаю позже ", callback_data=f"training_later_{today}")]
+            [InlineKeyboardButton(text="✅ Выполнил", callback_data="training_completed")],
+            [InlineKeyboardButton(text=" сделаю позже", callback_data="training_postpone")]
         ])
-        msg2 = await message.answer("Выполнили тренировку?", reply_markup=keyboard)
-        add_message_id(user_id, msg2.message_id)
+        msg = await message.answer(f"Твоя тренировка на сегодня:\n\n{training}", reply_markup=keyboard)
+        add_message_id(user_id, msg.message_id)
+        await delete_old_messages(user_id)
+
+        # Обновляем дату следующей тренировки
+        next_date = datetime.now() + timedelta(days=2)
+        cur.execute("UPDATE users SET next_training_date = ? WHERE user_id = ?", (next_date.isoformat(), user_id))
+        conn.commit()
 
     except Exception as e:
-        print(f"❌ Ошибка при генерации тренировки: {e}") # Лог
-        msg = await message.answer("❌ Ошибка при создании тренировки. Попробуйте позже.")
+        logger.error(f"Ошибка при генерации тренировки: {e}")
+        msg = await message.answer(f"❌ Ошибка при генерации тренировки. Попробуй позже.")
         add_message_id(user_id, msg.message_id)
 
 @dp.message(Command("food"))
-async def cmd_food(message: types.Message):
+async def send_food(message: types.Message):
+    logger.info(f"Получена команда /food от {message.from_user.id}")
     user_id = message.from_user.id
+    user = get_user_profile(user_id)
+    if not user:
+        msg = await message.answer("Сначала пройди анкету: /start")
+        add_message_id(user_id, msg.message_id)
+        return
+
     if not is_subscribed(user_id):
-        msg = await message.answer("Для доступа к питанию нужна подписка. /subscribe")
+        msg = await message.answer("🔒 Эта функция доступна только по подписке. Используй /subscribe, чтобы оформить.")
         add_message_id(user_id, msg.message_id)
         return
-
-    profile = get_user_profile(user_id)
-    if not profile:
-        msg = await message.answer("Сначала заполните анкету /start")
-        add_message_id(user_id, msg.message_id)
-        return
-
-    prompt = f"""
-    Ты ИИ-тренер. Создай примерное меню на 1 день для человека:
-    - Имя: {profile['name']}
-    - Пол: {profile['gender']}
-    - Возраст: {profile['age']}
-    - Вес: {profile['weight']} кг
-    - Рост: {profile['height']} см
-    - Цель: {profile['goal']}
-    - Диетические ограничения: нет
-    - Предпочтения: здоровая, сбалансированная пища
-    Верни ПЛАН ПИТАНИЯ в виде: Завтрак, Обед, Ужин, Перекусы (если нужно) с описанием блюд и примерной калорийностью.
-    """
 
     try:
-        print("Отправляем запрос к API (питание)...") # Лог
-        response = client.chat.completions.create(
-            model="openchat/openchat-7b",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=3000
+        completion = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": f"""
+Ты — персональный диетолог. Составь **индивидуальное меню на один день** для пользователя:
+
+- Имя: {user['name']}
+- Пол: {user['gender']}
+- Возраст: {user['age']} лет
+- Рост: {user['height']} см
+- Вес: {user['weight']} кг
+- Цель: {user['goal']}
+- Место тренировки: {user['training_location'] or 'не указано'}
+- Уровень: {user['level'] or 'не указан'}
+
+Меню должно быть:
+- Сбалансированным
+- Подходящим для достижения цели
+- Безопасным
+- Подходящим по возрасту и полу
+
+Формат ответа:
+- Завтрак: [описание]
+- Перекус (если нужно): [описание]
+- Обед: [описание]
+- Перекус (если нужно): [описание]
+- Ужин: [описание]
+- Полезные напитки: [если нужно]
+
+Пиши на **русском языке**.
+"""},  # Новый промт
+                {"role": "user", "content": "Создай питание."}
+            ],
+            max_tokens=3000,  # Увеличено
+            temperature=0.7
         )
-        print("Ответ от API (питание) получен") # Лог
-        food_plan = response.choices[0].message.content
-        msg = await message.answer(f"<b>Ваш план питания на сегодня:</b>\n\n{food_plan}")
+        food = completion.choices[0].message.content
+        msg = await message.answer(f"Твоё питание на сегодня:\n\n{food}")
         add_message_id(user_id, msg.message_id)
         await delete_old_messages(user_id)
     except Exception as e:
-        print(f"❌ Ошибка при генерации питания: {e}") # Лог
-        msg = await message.answer("❌ Ошибка при создании плана питания. Попробуйте позже.")
+        logger.error(f"Ошибка при генерации питания: {e}")
+        msg = await message.answer(f"❌ Ошибка при генерации питания. Попробуй позже.")
         add_message_id(user_id, msg.message_id)
+
+@dp.message(Command("weight"))
+async def cmd_weight(message: types.Message):
+    user_id = message.from_user.id
+    args = message.text.split()
+    if len(args) != 2:
+        msg = await message.answer("Введите команду в формате: /weight 70")
+        add_message_id(user_id, msg.message_id)
+        return
+    try:
+        weight = float(args[1])
+        save_weight(user_id, weight)
+        msg = await message.answer(f"Вес {weight} кг сохранён.")
+        add_message_id(user_id, msg.message_id)
+    except ValueError:
+        msg = await message.answer("Введите корректное число.")
+        add_message_id(user_id, msg.message_id)
+
+# --- Новые команды ---
 
 @dp.message(Command("progress"))
 async def cmd_progress(message: types.Message):
     user_id = message.from_user.id
-    if not is_subscribed(user_id):
-        msg = await message.answer("Для доступа к прогрессу нужна подписка. /subscribe")
-        add_message_id(user_id, msg.message_id)
-        return
-
-    text = message.text.split()
-    if len(text) != 2:
-        msg = await message.answer("Используйте команду: /progress <вес>")
+    args = message.text.split()
+    if len(args) < 2:
+        msg = await message.answer("Введите команду в формате:\n/progress 70.5 (вес в кг)")
         add_message_id(user_id, msg.message_id)
         return
 
     try:
-        weight = float(text[1].replace(',', '.'))
-        if not (30 <= weight <= 300):
-            raise ValueError("Неверный вес")
-    except ValueError:
-        msg = await message.answer("Введите корректный вес (например, 70.5).")
+        weight = float(args[1])
+        save_weight(user_id, weight)
+
+        # Сохраняем в progress
+        cur.execute("""
+            INSERT INTO progress (user_id, weight) VALUES (?, ?)
+        """, (user_id, weight))
+        conn.commit()
+
+        msg = await message.answer(f"✅ Вес {weight} кг сохранён в прогресс.")
         add_message_id(user_id, msg.message_id)
-        return
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cur.execute("INSERT INTO progress (user_id, weight, date) VALUES (?, ?, ?)", (user_id, weight, now))
-    conn.commit()
+        # Проверим достижения
+        check_achievements(user_id)
 
-    # Проверяем достижения (например, "Вес в норме")
-    profile = get_user_profile(user_id)
-    if profile:
-        height_m = profile['height'] / 100
-        bmi = weight / (height_m ** 2)
-        if 18.5 <= bmi <= 24.9:
-            cur.execute("SELECT id FROM achievements WHERE user_id = ? AND title = ?", (user_id, "Золотая середина"))
-            if cur.fetchone() is None:
-                add_achievement(user_id, "Золотая середина", "BMI в норме!")
+    except ValueError:
+        msg = await message.answer("Введите корректное число.")
+        add_message_id(user_id, msg.message_id)
 
-    msg = await message.answer(f"Вес {weight} кг записан. Дата: {now.split()[0]}")
+@dp.message(Command("schedule"))
+async def cmd_schedule(message: types.Message):
+    user_id = message.from_user.id
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="3 раза в неделю", callback_data="schedule_3")],
+        [InlineKeyboardButton(text="4 раза в неделю", callback_data="schedule_4")],
+        [InlineKeyboardButton(text="5 раз в неделю", callback_data="schedule_5")]
+    ])
+    msg = await message.answer("Сколько раз в неделю хочешь тренироваться?", reply_markup=keyboard)
     add_message_id(user_id, msg.message_id)
 
-@dp.message(Command("profile"))
-async def cmd_profile(message: types.Message):
+@dp.message(Command("report"))
+async def cmd_report(message: types.Message):
     user_id = message.from_user.id
-    if not is_subscribed(user_id):
-        msg = await message.answer("Для доступа к профилю нужна подписка. /subscribe")
-        add_message_id(user_id, msg.message_id)
-        return
+    # Пример: недельный отчёт
+    now = datetime.now()
+    week_ago = now - timedelta(days=7)
 
-    profile = get_user_profile(user_id)
-    if not profile:
-        msg = await message.answer("Сначала заполните анкету /start")
-        add_message_id(user_id, msg.message_id)
-        return
+    # Сколько тренировок выполнено за неделю
+    cur.execute("""
+        SELECT COUNT(*) FROM trainings
+        WHERE user_id = ? AND status = 'completed' AND date >= ?
+    """, (user_id, week_ago.isoformat()))
+    completed_count = cur.fetchone()[0]
 
-    sub_end = None
-    cur.execute("SELECT subscription_end_date FROM users WHERE id = ?", (user_id,))
-    sub_result = cur.fetchone()
-    if sub_result and sub_result[0]:
-        sub_end = datetime.fromisoformat(sub_result[0])
+    # Сколько тренировок просрочено
+    cur.execute("""
+        SELECT COUNT(*) FROM trainings
+        WHERE user_id = ? AND status = 'missed' AND date >= ?
+    """, (user_id, week_ago.isoformat()))
+    missed_count = cur.fetchone()[0]
 
-    days_left = get_trial_days_left(user_id)
-    sub_info = ""
-    if sub_end:
-        sub_info = f"\nПодписка до: {sub_end.strftime('%d.%m.%Y')}"
-    if days_left > 0:
-        sub_info += f"\n(из них {days_left} дней — пробная неделя)"
+    report = f"""
+📊 Недельный отчёт (последние 7 дней):
+- Выполнено тренировок: {completed_count}
+- Пропущено тренировок: {missed_count}
+    """
 
-    msg = await message.answer(f"<b>Профиль:</b>\n"
-                         f"Имя: {profile['name']}\n"
-                         f"Возраст: {profile['age']}\n"
-                         f"Пол: {profile['gender']}\n"
-                         f"Вес: {profile['weight']} кг\n"
-                         f"Рост: {profile['height']} см\n"
-                         f"Цель: {profile['goal']}\n"
-                         f"Место тренировки: {profile['training_location']}\n"
-                         f"Уровень: {profile['level']}{sub_info}")
+    msg = await message.answer(report)
     add_message_id(user_id, msg.message_id)
 
 @dp.message(Command("achievements"))
 async def cmd_achievements(message: types.Message):
     user_id = message.from_user.id
-    if not is_subscribed(user_id):
-        msg = await message.answer("Для доступа к достижениям нужна подписка. /subscribe")
-        add_message_id(user_id, msg.message_id)
-        return
+    cur.execute("SELECT name, date_achieved FROM achievements WHERE user_id = ?", (user_id,))
+    rows = cur.fetchall()
 
-    cur.execute("SELECT title, description, unlocked_date FROM achievements WHERE user_id = ?", (user_id,))
-    achs = cur.fetchall()
+    if not rows:
+        msg = await message.answer("У тебя пока нет достижений.")
+    else:
+        ach_list = "\n".join([f"🏆 {name} — {date.split()[0]}" for name, date in rows])
+        msg = await message.answer(f"Твои достижения:\n\n{ach_list}")
 
-    if not achs:
-        msg = await message.answer("У вас пока нет достижений. Продолжайте тренироваться!")
-        add_message_id(user_id, msg.message_id)
-        return
-
-    ach_text = "<b>Ваши достижения:</b>\n\n"
-    for title, desc, date in achs:
-        ach_text += f"🏆 <b>{title}</b>\n<i>{desc}</i>\nДата: {date[:10]}\n\n"
-
-    msg = await message.answer(ach_text)
     add_message_id(user_id, msg.message_id)
 
-# --- Чат с ИИ ---
-@dp.message(Command("chat"))
-async def cmd_chat(message: types.Message):
+@dp.message(Command("profile"))
+async def show_profile(message: types.Message):
+    logger.info(f"Получена команда /profile от {message.from_user.id}")
     user_id = message.from_user.id
-    if not is_subscribed(user_id):
-        msg = await message.answer("Для доступа к чату с ИИ нужна подписка. /subscribe")
+    user = get_user_profile(user_id)
+    if not user:
+        msg = await message.answer("Сначала пройди анкету: /start")
         add_message_id(user_id, msg.message_id)
         return
 
-    profile = get_user_profile(user_id)
-    if not profile:
-        msg = await message.answer("Сначала заполните анкету /start")
-        add_message_id(user_id, msg.message_id)
-        return
+    sub_status = "Подписка активна" if is_subscribed(user_id) else "Подписка не оформлена"
+    weights = get_weights(user_id)
+    weights_str = "\n".join([f"{w[1].split()[0]}: {w[0]} кг" for w in weights[-5:]])
 
-    prompt = f"Ты ИИ-тренер. Пользователь задаёт вопрос. Учитывай его данные: Имя: {profile['name']}, Пол: {profile['gender']}, Возраст: {profile['age']}, Вес: {profile['weight']} кг, Рост: {profile['height']} см, Цель: {profile['goal']}, Место: {profile['training_location']}, Уровень: {profile['level']}. Ответь на вопрос: {message.text[6:]}" # [6:] убирает "/chat "
+    # Получаем график
+    cur.execute("SELECT schedule FROM training_schedule WHERE user_id = ?", (user_id,))
+    sched_row = cur.fetchone()
+    schedule_info = sched_row[0] if sched_row else "не настроен"
 
-    try:
-        response = client.chat.completions.create(
-            model="openchat/openchat-7b",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=500
-        )
-        ai_response = response.choices[0].message.content
-        msg = await message.answer(ai_response)
-        add_message_id(user_id, msg.message_id)
-    except Exception as e:
-        logger.error(f"Ошибка при ответе ИИ: {e}")
-        msg = await message.answer("Ошибка при ответе ИИ. Попробуйте позже.")
-        add_message_id(user_id, msg.message_id)
+    # Получаем достижения
+    cur.execute("SELECT name FROM achievements WHERE user_id = ?", (user_id,))
+    ach_rows = cur.fetchall()
+    achievements_list = ", ".join([a[0] for a in ach_rows]) if ach_rows else "нет"
 
-# --- Анализ рациона ---
-@dp.message(Command("analyze_food"))
-async def cmd_analyze_food(message: types.Message):
+    profile = (
+        f"Имя: {user['name']}\n"
+        f"Возраст: {user['age']}\n"
+        f"Пол: {user['gender']}\n"
+        f"Рост: {user['height']} см\n"
+        f"Вес: {user['weight']} кг\n"
+        f"Цель: {user['goal']}\n"
+        f"Место тренировки: {user['training_location'] or 'не указано'}\n"
+        f"Уровень: {user['level'] or 'не указан'}\n"
+        f"Дата следующей тренировки: {user['next_training_date'] or 'не указана'}\n"
+        f"Время напоминаний: {user['reminder_time']}\n"
+        f"График тренировок: {schedule_info}\n"
+        f"Достижения: {achievements_list}\n"
+        f"Статус подписки: {sub_status}\n"
+        f"История веса:\n{weights_str if weights else 'Нет данных'}"
+    )
+    msg = await message.answer(profile)
+    add_message_id(user_id, msg.message_id)
+
+@dp.message(Command("weight_graph"))
+async def send_weight_graph(message: types.Message):
     user_id = message.from_user.id
-    if not is_subscribed(user_id):
-        msg = await message.answer("Для доступа к анализу питания нужна подписка. /subscribe")
+    weights = get_weights(user_id)
+
+    if not weights:
+        msg = await message.answer("Нет данных о весе.")
         add_message_id(user_id, msg.message_id)
         return
 
-    food_description = message.text[14:] # Убираем "/analyze_food "
-    if not food_description.strip():
-        msg = await message.answer("Используйте команду: /analyze_food <описание еды>")
-        add_message_id(user_id, msg.message_id)
-        return
-
-    profile = get_user_profile(user_id)
-    prompt = f"""
-    Ты ИИ-тренер. Проанализируй питание, описанное пользователем: "{food_description}".
-    Учитывай его данные: Имя: {profile['name']}, Пол: {profile['gender']}, Возраст: {profile['age']}, Вес: {profile['weight']} кг, Рост: {profile['height']} см, Цель: {profile['goal']}.
-    Оцени полезность, сбалансированность, калорийность (приблизительно). Дай рекомендации.
-    """
-
-    try:
-        response = client.chat.completions.create(
-            model="openchat/openchat-7b",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=500
-        )
-        analysis = response.choices[0].message.content
-        msg = await message.answer(f"<b>Анализ вашего рациона:</b>\n\n{analysis}")
-        add_message_id(user_id, msg.message_id)
-    except Exception as e:
-        logger.error(f"Ошибка при анализе рациона: {e}")
-        msg = await message.answer("Ошибка при анализе рациона. Попробуйте позже.")
-        add_message_id(user_id, msg.message_id)
-
-# --- График прогресса ---
-@dp.message(Command("graph"))
-async def cmd_graph(message: types.Message):
-    user_id = message.from_user.id
-    if not is_subscribed(user_id):
-        msg = await message.answer("Для доступа к графику нужна подписка. /subscribe")
-        add_message_id(user_id, msg.message_id)
-        return
-
-    cur.execute("SELECT date, weight FROM progress WHERE user_id = ? ORDER BY date ASC", (user_id,))
-    data = cur.fetchall()
-
-    if not data:
-        msg = await message.answer("Нет данных для построения графика. Добавьте вес с помощью /progress.")
-        add_message_id(user_id, msg.message_id)
-        return
-
-    dates = [datetime.fromisoformat(d[0]) for d in data]
-    weights = [d[1] for d in data]
+    dates = [w[1].split()[0] for w in weights]
+    values = [w[0] for w in weights]
 
     plt.figure(figsize=(10, 5))
-    plt.plot(dates, weights, marker='o')
-    plt.title(f'График веса пользователя {message.from_user.first_name}')
-    plt.xlabel('Дата')
-    plt.ylabel('Вес (кг)')
-    plt.grid(True)
+    plt.plot(dates, values, marker='o')
+    plt.title("График изменения веса")
+    plt.xlabel("Дата")
+    plt.ylabel("Вес (кг)")
     plt.xticks(rotation=45)
     plt.tight_layout()
 
-    img_buffer = io.BytesIO()
-    plt.savefig(img_buffer, format='png')
-    img_buffer.seek(0)
-    plt.close() # ВАЖНО: закрываем фигуру, чтобы освободить память
+    img = io.BytesIO()
+    plt.savefig(img, format='png')
+    img.seek(0)
+    plt.close()
 
-    input_file = BufferedInputFile(img_buffer.getvalue(), filename='progress_graph.png')
-    msg = await message.answer_document(input_file)
+    # Оборачиваем BytesIO в BufferedInputFile
+    photo = BufferedInputFile(img.read(), filename='weight_graph.png')
+    msg = await message.answer_photo(photo=photo)
     add_message_id(user_id, msg.message_id)
 
-# --- Напоминания ---
-@dp.message(Command("set_reminder_time"))
-async def cmd_set_reminder_time(message: types.Message):
-    user_id = message.from_user.id
-    if not is_subscribed(user_id):
-        msg = await message.answer("Для настройки напоминаний нужна подписка. /subscribe")
-        add_message_id(user_id, msg.message_id)
+# --- Callback-ы ---
+
+@dp.callback_query(lambda c: c.data.startswith("gender_"))
+async def process_gender_callback(callback_query: types.CallbackQuery):
+    logger.info(f"✅ Получен callback: {callback_query.data}")  # Лог
+    user_id = callback_query.from_user.id
+    if user_id not in user_states:
+        await callback_query.answer("Сначала начни анкету: /start")
         return
 
-    text = message.text.split()
-    if len(text) != 2:
-        msg = await message.answer("Используйте команду: /set_reminder_time HH:MM (например, 19:00)")
-        add_message_id(user_id, msg.message_id)
+    state = user_states[user_id]
+    if state["step"] != "gender":
+        await callback_query.answer("Это не тот этап анкеты.")
         return
 
-    time_str = text[1]
-    try:
-        # Проверяем формат времени
-        datetime.strptime(time_str, "%H:%M")
-        reminder_times[user_id] = time_str
-        # Перезапускаем задачу для этого пользователя
-        try:
-            scheduler.remove_job(job_id=f"remind_{user_id}", jobstore='default')
-        except:
-            pass
-        hour, minute = map(int, time_str.split(':'))
-        scheduler.add_job(remind_workout, "cron", hour=hour, minute=minute, id=f"remind_{user_id}", args=[user_id])
-        msg = await message.answer(f"Время напоминания установлено на {time_str}.")
-        add_message_id(user_id, msg.message_id)
-    except ValueError:
-        msg = await message.answer("Неверный формат времени. Используйте HH:MM (например, 19:00).")
-        add_message_id(user_id, msg.message_id)
+    gender = "мужской" if callback_query.data == "gender_male" else "женский"
+    state["data"]["gender"] = gender
+    state["step"] = "height"
 
-async def remind_workout(user_id):
-    try:
-        await bot.send_message(user_id, "Время тренировки! 💪 Не забудь про /training и /food сегодня!")
-    except Exception as e:
-        logger.error(f"Ошибка при отправке напоминания пользователю {user_id}: {e}")
+    # Удаляем старые сообщения
+    await delete_old_messages(user_id, keep_last=0)
+    msg = await callback_query.message.edit_text(f"Отлично! Теперь скажи, какой у тебя рост? (в см)")
+    add_message_id(user_id, msg.message_id)
 
-# --- Callback для тренировки ---
-@dp.callback_query(lambda c: c.data.startswith('training_completed_'))
+@dp.callback_query(lambda c: c.data.startswith("goal_"))
+async def process_goal_callback(callback_query: types.CallbackQuery):
+    logger.info(f"✅ Получен callback: {callback_query.data}")  # Лог
+    user_id = callback_query.from_user.id
+    if user_id not in user_states:
+        await callback_query.answer("Сначала начни анкету: /start")
+        return
+
+    state = user_states[user_id]
+    if state["step"] != "goal":
+        await callback_query.answer("Это не тот этап анкеты.")
+        return
+
+    goal_map = {
+        "goal_lose_weight": "похудеть",
+        "goal_gain_muscle": "набрать массу",
+        "goal_maintain": "поддерживать"
+    }
+    goal = goal_map[callback_query.data]
+    state["data"]["goal"] = goal
+
+    # Перейти к выбору места тренировки
+    state["step"] = "training_location"
+    # Удаляем старые сообщения
+    await delete_old_messages(user_id, keep_last=0)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 Дом (без инвентаря)", callback_data="location_home_basic")],
+        [InlineKeyboardButton(text="🏋️ Дом + гантели", callback_data="location_home_weights")],
+        [InlineKeyboardButton(text="🏋️‍♂️ Зал", callback_data="location_gym")],
+        [InlineKeyboardButton(text="🌿 Улица", callback_data="location_outdoor")]
+    ])
+    msg = await callback_query.message.edit_text("Где ты тренируешься?", reply_markup=keyboard)
+    add_message_id(user_id, msg.message_id)
+
+@dp.callback_query(lambda c: c.data.startswith("location_"))
+async def process_location_callback(callback_query: types.CallbackQuery):
+    logger.info(f"✅ Получен callback: {callback_query.data}")  # Лог
+    user_id = callback_query.from_user.id
+    if user_id not in user_states:
+        await callback_query.answer("Сначала начни анкету: /start")
+        return
+
+    state = user_states[user_id]
+    if state["step"] != "training_location":
+        await callback_query.answer("Это не тот этап анкеты.")
+        return
+
+    location_map = {
+        "location_home_basic": "дом (без инвентаря)",
+        "location_home_weights": "дом + гантели",
+        "location_gym": "зал",
+        "location_outdoor": "улица"
+    }
+    location = location_map[callback_query.data]
+    state["data"]["training_location"] = location
+
+    logger.info(f"✅ Сохранено место тренировки: {location}")  # Лог
+
+    # Перейти к выбору уровня
+    state["step"] = "level"
+    # Удаляем старые сообщения
+    await delete_old_messages(user_id, keep_last=0)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌱 Новичок", callback_data="level_beginner")],
+        [InlineKeyboardButton(text="⚡ Средний", callback_data="level_intermediate")],
+        [InlineKeyboardButton(text="🔥 Продвинутый", callback_data="level_advanced")]
+    ])
+    msg = await callback_query.message.edit_text("Какой у тебя уровень?", reply_markup=keyboard)
+    add_message_id(user_id, msg.message_id)
+
+@dp.callback_query(lambda c: c.data.startswith("level_"))
+async def process_level_callback(callback_query: types.CallbackQuery):
+    logger.info(f"✅ Получен callback: {callback_query.data}")  # Лог
+    user_id = callback_query.from_user.id
+    if user_id not in user_states:
+        await callback_query.answer("Сначала начни анкету: /start")
+        return
+
+    state = user_states[user_id]
+    if state["step"] != "level":
+        await callback_query.answer("Это не тот этап анкеты.")
+        return
+
+    level_map = {
+        "level_beginner": "новичок",
+        "level_intermediate": "средний",
+        "level_advanced": "продвинутый"
+    }
+    level = level_map[callback_query.data]
+    state["data"]["level"] = level
+
+    logger.info(f"✅ Сохранён уровень: {level}")  # Лог
+
+    # Сохраняем профиль
+    profile = state["data"]
+    save_user_profile(user_id, profile)
+
+    # Очищаем состояние
+    del user_states[user_id]
+
+    # Удаляем старые сообщения
+    await delete_old_messages(user_id, keep_last=0)
+    msg = await callback_query.message.edit_text(
+        f"✅ Отлично, {profile['name']}! Твой профиль сохранён.\n\nТеперь ты можешь использовать:\n"
+        "/training — получить тренировку\n"
+        "/food — получить питание\n"
+        "/subscribe — оформить подписку\n"
+        "/profile — посмотреть свой профиль"
+    )
+    add_message_id(user_id, msg.message_id)
+
+@dp.callback_query(lambda c: c.data == "training_completed")
 async def training_completed_callback(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
-    date_str = callback_query.data.split('_')[-1] # Получаем дату из callback_data
 
-    # Обновляем статус тренировки на 'completed'
-    # Используем UPDATE с WHERE для конкретной даты и пользователя
-    cur.execute("UPDATE training_logs SET status = 'completed' WHERE user_id = ? AND date = ?", (user_id, date_str))
-    conn.commit()
+    # Сначала находим ID самой последней "pending" тренировки
+    cur.execute("""
+        SELECT id FROM trainings
+        WHERE user_id = ? AND status = 'pending'
+        ORDER BY date DESC
+        LIMIT 1
+    """, (user_id,))
+    row = cur.fetchone()
 
-    await callback_query.message.edit_text(f"✅ Отлично! Тренировка на {date_str} засчитана.")
-    await callback_query.answer()
+    if row:
+        training_id = row[0]
+        # Обновляем статус
+        cur.execute("UPDATE trainings SET status = 'completed' WHERE id = ?", (training_id,))
+        conn.commit()
+        await callback_query.answer("✅ Отлично! Тренировка засчитана.")
+        check_achievements(user_id)  # Проверяем достижения
+    else:
+        await callback_query.answer("❌ Нет активной тренировки для завершения.", show_alert=True)
 
-@dp.callback_query(lambda c: c.data.startswith('training_later_'))
-async def training_later_callback(callback_query: types.CallbackQuery):
+    await callback_query.message.edit_reply_markup(reply_markup=None)  # Убираем кнопки
+
+@dp.callback_query(lambda c: c.data == "training_postpone")
+async def training_postpone_callback(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
-    date_str = callback_query.data.split('_')[-1]
-
-    # Обновляем статус тренировки на 'skipped'
-    cur.execute("UPDATE training_logs SET status = 'skipped' WHERE user_id = ? AND date = ?", (user_id, date_str))
+    # Обновляем дату следующей тренировки на +1 день
+    next_date = datetime.now() + timedelta(days=1)
+    cur.execute("UPDATE users SET next_training_date = ? WHERE user_id = ?", (next_date.isoformat(), user_id))
     conn.commit()
+    await callback_query.answer("✅ Тренировка перенесена на завтра.")
+    await callback_query.message.edit_reply_markup(reply_markup=None)  # Убираем кнопки
 
-    await callback_query.message.edit_text(f"Понял, тренировку на {date_str} можно сделать позже.")
-    await callback_query.answer()
+@dp.callback_query(lambda c: c.data.startswith("schedule_"))
+async def process_schedule_callback(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    schedule_map = {
+        "schedule_3": {"days_per_week": 3, "days": ["Mon", "Wed", "Fri"]},
+        "schedule_4": {"days_per_week": 4, "days": ["Mon", "Tue", "Thu", "Sat"]},
+        "schedule_5": {"days_per_week": 5, "days": ["Mon", "Tue", "Wed", "Thu", "Fri"]}
+    }
+    schedule_key = callback_query.data
+    schedule_data = schedule_map.get(schedule_key)
+    if schedule_data:
+        import json
+        cur.execute("INSERT OR REPLACE INTO training_schedule (user_id, schedule) VALUES (?, ?)", (user_id, json.dumps(schedule_data)))
+        conn.commit()
+        await callback_query.answer(f"✅ Установлен график: {schedule_data['days_per_week']} раза в неделю.")
+        await callback_query.message.edit_text(f"Твой график: {schedule_data['days_per_week']} тренировки в неделю ({', '.join(schedule_data['days'])}).")
 
-# --- Обработчик всех остальных сообщений (для анкеты и пропуска команд) ---
+# --- Обработчик текста (всегда в конце!) ---
+
 @dp.message()
-async def handle_message(message: types.Message):
+async def handle_questionnaire(message: types.Message):
     user_id = message.from_user.id
-    print(f"Получено сообщение от {user_id}: {message.text}") # Лог
+    logger.info(f"Получено сообщение от {user_id}: {message.text}")  # Лог
 
     # Проверяем, является ли сообщение командой
     if message.text and message.text.startswith('/'):
-        print(f"Команда '{message.text}' — пропускаем, пусть обработчик команд сработает") # Лог
+        logger.info(f"Команда '{message.text}' — пропускаем, пусть обработчик команд сработает")  # Лог
         # НЕ вызываем await, просто выходим — пусть другие хендлеры обработают команду
         return
 
     # Если пользователь в анкете, обрабатываем анкету
-    if user_id in user_states and 'step' in user_states[user_id]:
-        # Обработка уже идёт в process_profile
-        pass # Это место не должно сработать, если process_profile привязан к сообщениям
-    else:
-        # Если не в анкете и не команда, можно игнорировать или отправить приветствие
-        pass
+    if user_id in user_states:
+        state = user_states[user_id]
+        step = state["step"]
+        data = state["data"]
 
+        if step == "name":
+            name = message.text.strip()
+            if len(name) < 2:
+                msg = await message.answer("Пожалуйста, введи настоящее имя (минимум 2 символа).")
+                add_message_id(user_id, msg.message_id)
+                return
+            data["name"] = name
+            state["step"] = "age"
+            # Удаляем старые сообщения
+            await delete_old_messages(user_id, keep_last=0)
+            msg = await message.answer(f"Отлично, {name}! Сколько тебе лет? (введите число)")
+            add_message_id(user_id, msg.message_id)
+
+        elif step == "age":
+            try:
+                age = int(message.text.strip())
+                if age < 10 or age > 100:
+                    msg = await message.answer("Пожалуйста, введи реальный возраст (от 10 до 100).")
+                    add_message_id(user_id, msg.message_id)
+                    return
+                data["age"] = age
+                state["step"] = "gender"
+                # Удаляем старые сообщения
+                await delete_old_messages(user_id, keep_last=0)
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="Мужской", callback_data="gender_male")],
+                    [InlineKeyboardButton(text="Женский", callback_data="gender_female")]
+                ])
+                msg = await message.answer("Какой у тебя пол?", reply_markup=keyboard)
+                add_message_id(user_id, msg.message_id)
+            except ValueError:
+                msg = await message.answer("Пожалуйста, введи число.")
+                add_message_id(user_id, msg.message_id)
+
+        elif step == "height":
+            try:
+                height = int(message.text.strip())
+                if height < 100 or height > 250:
+                    msg = await message.answer("Пожалуйста, введи реальный рост в см (от 100 до 250).")
+                    add_message_id(user_id, msg.message_id)
+                    return
+                data["height"] = height
+                state["step"] = "weight"
+                # Удаляем старые сообщения
+                await delete_old_messages(user_id, keep_last=0)
+                msg = await message.answer("Какой у тебя текущий вес? (в кг, например: 70.5)")
+                add_message_id(user_id, msg.message_id)
+            except ValueError:
+                msg = await message.answer("Пожалуйста, введи число.")
+                add_message_id(user_id, msg.message_id)
+
+        elif step == "weight":
+            try:
+                weight = float(message.text.strip())
+                if weight < 30 or weight > 300:
+                    msg = await message.answer("Пожалуйста, введи реальный вес (от 30 до 300 кг).")
+                    add_message_id(user_id, msg.message_id)
+                    return
+                data["weight"] = weight
+                state["step"] = "goal"
+                # Удаляем старые сообщения
+                await delete_old_messages(user_id, keep_last=0)
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="Похудеть", callback_data="goal_lose_weight")],
+                    [InlineKeyboardButton(text="Набрать массу", callback_data="goal_gain_muscle")],
+                    [InlineKeyboardButton(text="Поддерживать", callback_data="goal_maintain")]
+                ])
+                msg = await message.answer("Какая у тебя цель?", reply_markup=keyboard)
+                add_message_id(user_id, msg.message_id)
+            except ValueError:
+                msg = await message.answer("Пожалуйста, введи число (можно с точкой).")
+                add_message_id(user_id, msg.message_id)
+    # Если пользователь не в анкете и это не команда — игнорируем
 
 # --- Основная функция запуска ---
 async def main():
@@ -857,7 +927,22 @@ async def main():
         logger.info(f"📡 Вебхук установлен на {WEBHOOK_URL}")
     except Exception as e:
         logger.error(f"❌ Ошибка при установке вебхука: {e}")
-        return # Выйти, если не удалось установить вебхук
+        return
+
+    # --- Flask приложение для вебхука ---
+    app = Flask(__name__)
+
+    @app.route('/webhook', methods=['POST'])
+    def webhook():
+        if request.headers.get('content-type') == 'application/json':
+            json_string = request.get_data().decode('utf-8')
+            update = types.Update.model_validate_json(json_string)
+            # Используем threadsafe версию, передавая сохранённый loop
+            asyncio.run_coroutine_threadsafe(dp.feed_update(bot, update), loop)
+            return '', 200
+        else:
+            logger.warning("Получен запрос на /webhook с неправильным Content-Type")
+            return '', 403
 
     # --- Запуск Flask в отдельном потоке ---
     def run_flask():
@@ -893,39 +978,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except Exception as e:
         logger.critical(f"💥 Критическая ошибка в основном цикле: {e}", exc_info=True)
-
-# --- Flask приложение для вебхука ---
-# Убедись, что это находится в том же файле, что и async def main() выше
-app = Flask(__name__)
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    # Получаем JSON-данные из тела запроса
-    json_data = request.get_json()
-    if not json_data:
-        logger.warning("Получен пустой webhook запрос")
-        return 'Bad Request: No JSON data', 400
-
-    try:
-        # Преобразуем JSON в объект Update
-        update = types.Update.model_validate(json_data)
-        # НЕПОСРЕДСТВЕННО обрабатываем обновление в этом синхронном потоке
-        # Это работает, потому что `Dispatcher` может обрабатывать обновления синхронно
-        # в некоторых случаях, или вы можете использовать `asyncio.run()` внутри,
-        # но проще и надежнее запустить обработку в главном asyncio-цикле.
-        # Однако, для простоты и совместимости, мы можем просто запланировать его.
-        # asyncio.create_task() не работает напрямую в синхронной функции Flask,
-        # но мы можем использовать loop.call_soon_threadsafe
-        
-        # Планируем выполнение в главном цикле asyncio
-        asyncio.run_coroutine_threadsafe(dp.feed_update(bot, update), loop)
-        logger.debug(f"📥 Обновление {update.update_id} поставлено в очередь")
-    except Exception as e:
-        logger.error(f"❌ Ошибка обработки webhook: {e}", exc_info=True)
-        # Не возвращаем 500, чтобы Telegram не считал это критической ошибкой
-        # и не прекращал отправлять обновления
-        return 'Internal Server Error', 500 
-
-    # Возвращаем 200 OK, чтобы Telegram знал, что обновление получено
-    return 'OK', 200
-
