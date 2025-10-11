@@ -12,14 +12,14 @@ import matplotlib.pyplot as plt
 import io
 import hashlib
 from urllib.parse import urlencode
-from flask import Flask, request
+from flask import Flask, request, render_template, redirect, session, url_for
 import threading
 import os
 import logging
 
 # --- Импортируем конфигурацию ---
 try:
-    from config import API_TOKEN, OPENROUTER_API_KEY, ROBOKASSA_LOGIN, ROBOKASSA_PASS1, ROBOKASSA_PASS2, WEBHOOK_URL, ADMIN_PASSWORD
+    from config import API_TOKEN, OPENROUTER_API_KEY, ROBOKASSA_LOGIN, ROBOKASSA_PASS1, ROBOKASSA_PASS2, WEBHOOK_URL, ADMIN_PASSWORD, ADMIN_IDS
 except ImportError:
     print("❌ Файл config.py не найден или не содержит всех необходимых переменных.")
     exit(1)
@@ -33,10 +33,9 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
 # --- OpenAI клиент ---
-# ИСПРАВЛЕНО: убраны лишние пробелы в base_url
 client = OpenAI(
     api_key=OPENROUTER_API_KEY,
-    base_url='https://openrouter.ai/api/v1/' # <-- Исправлено
+    base_url='https://openrouter.ai/api/v1/'
 )
 
 MODEL = "microsoft/wizardlm-2-8x22b"
@@ -140,9 +139,32 @@ user_states = {}
 scheduler = AsyncIOScheduler()
 reminder_times = {}
 loop = None
-flask_app = None  # <-- Добавлено для управления Flask-приложением
+flask_app = None
 
 # --- Вспомогательные функции ---
+def is_admin(user_id):
+    return user_id in ADMIN_IDS
+
+def get_user_count():
+    cur.execute("SELECT COUNT(*) FROM users")
+    return cur.fetchone()[0]
+
+def get_subscribed_users():
+    cur.execute("SELECT user_id FROM subscriptions WHERE expires_at > ?", (datetime.now().isoformat(),))
+    return [row[0] for row in cur.fetchall()]
+
+def grant_subscription(user_id, days=7):
+    expires_at = datetime.now() + timedelta(days=days)
+    cur.execute("""
+        INSERT OR REPLACE INTO subscriptions (user_id, expires_at)
+        VALUES (?, ?)
+    """, (user_id, expires_at.isoformat()))
+    conn.commit()
+
+def revoke_subscription(user_id):
+    cur.execute("DELETE FROM subscriptions WHERE user_id = ?", (user_id,))
+    conn.commit()
+
 def save_user_profile(user_id, profile):
     cur.execute("""
         INSERT OR REPLACE INTO users (user_id, name, age, gender, height, weight, goal, training_location, level)
@@ -247,9 +269,25 @@ def check_achievements(user_id):
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
+    # Проверяем, есть ли пользователь в базе
+    cur.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+    user_exists = cur.fetchone()
+
+    if not user_exists:
+        # Это новый пользователь
+        logger.info(f"Новый пользователь: {user_id}")
+        # Выдаём тестовую подписку на 7 дней
+        grant_subscription(user_id, days=7)
+        msg = await message.answer("🎉 Привет! Тебе выдан **тестовый доступ на 7 дней**. Начни анкету: Как тебя зовут?")
+    else:
+        # Пользователь уже существует
+        logger.info(f"Повторный запуск от: {user_id}")
+        msg = await message.answer("Привет снова! Ты уже проходил анкету. Используй команды.")
+
+    # Сбрасываем состояние, если пользователь начал заново
     user_states[user_id] = {"step": "name", "data": {}, "messages": []}
+    # Удаляем старые сообщения
     await delete_old_messages(user_id, keep_last=0)
-    msg = await message.answer("Привет! Я твой персональный тренер 💪\n\nКак тебя зовут?")
     add_message_id(user_id, msg.message_id)
 
 @dp.message(Command("cancel"))
@@ -581,6 +619,49 @@ async def send_weight_graph(message: types.Message):
     msg = await message.answer_photo(photo=photo)
     add_message_id(user_id, msg.message_id)
 
+@dp.message(Command("admin"))
+async def cmd_admin(message: types.Message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        msg = await message.answer("❌ У вас нет прав администратора.")
+        add_message_id(user_id, msg.message_id)
+        return
+
+    # Простое меню администратора
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Количество пользователей", callback_data="admin_user_count")],
+        [InlineKeyboardButton(text="📋 Подписчики", callback_data="admin_subscribed")],
+        [InlineKeyboardButton(text="✅ Выдать подписку", callback_data="admin_grant_sub")],
+        [InlineKeyboardButton(text="❌ Отозвать подписку", callback_data="admin_revoke_sub")],
+    ])
+    msg = await message.answer("🔐 Панель администратора:", reply_markup=keyboard)
+    add_message_id(user_id, msg.message_id)
+
+@dp.callback_query(lambda c: c.data.startswith("admin_"))
+async def admin_callback_handler(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    if not is_admin(user_id):
+        await callback_query.answer("❌ У вас нет прав.")
+        return
+
+    action = callback_query.data
+
+    if action == "admin_user_count":
+        count = get_user_count()
+        await callback_query.answer(f"Всего пользователей: {count}", show_alert=True)
+
+    elif action == "admin_subscribed":
+        subs = get_subscribed_users()
+        await callback_query.answer(f"Количество подписчиков: {len(subs)}", show_alert=True)
+
+    elif action == "admin_grant_sub":
+        await callback_query.answer("Функция 'Выдать подписку' требует доработки для ввода ID пользователя и дней.", show_alert=True)
+
+    elif action == "admin_revoke_sub":
+        await callback_query.answer("Функция 'Отозвать подписку' требует доработки для ввода ID пользователя.", show_alert=True)
+
+    await callback_query.message.edit_reply_markup(reply_markup=None) # Убираем кнопки
+
 # --- Callback-ы ---
 @dp.callback_query(lambda c: c.data.startswith("gender_"))
 async def process_gender_callback(callback_query: types.CallbackQuery):
@@ -844,11 +925,10 @@ async def main():
         return
 
     app = Flask(__name__)
-    flask_app = app # <-- Сохраняем ссылку на приложение
+    flask_app = app
 
     @app.route('/webhook', methods=['POST'])
     def webhook():
-        # ИСПРАВЛЕНО: проверка Content-Type без учёта регистра
         content_type = request.headers.get('Content-Type', '').lower()
         if content_type != 'application/json':
             logger.warning("Получен запрос на /webhook с неправильным Content-Type")
@@ -856,27 +936,43 @@ async def main():
 
         json_string = request.get_data().decode('utf-8')
         try:
-            # ИСПРАВЛЕНО: проверка валидности JSON
             update = types.Update.model_validate_json(json_string)
         except Exception as e:
             logger.error(f"Ошибка при десериализации JSON: {e}")
             return '', 400
 
-        # ИСПРАВЛЕНО: обернуто в try-except для логирования ошибок внутри dp.feed_update
         try:
             future = asyncio.run_coroutine_threadsafe(dp.feed_update(bot, update), loop)
-            # Опционально: можно дождаться выполнения, но это заблокирует поток Flask
-            # result = future.result(timeout=10) # 10 сек таймаут
         except Exception as e:
             logger.error(f"Ошибка при передаче апдейта в aiogram: {e}")
             return '', 500
 
         return '', 200
 
+    # --- Веб-админка ---
+    @app.route('/admin', methods=['GET', 'POST'])
+    def admin_page():
+        if request.method == 'POST':
+            password = request.form.get('password')
+            if password == ADMIN_PASSWORD:
+                session['authenticated'] = True
+                return redirect(url_for('admin_page'))
+            else:
+                return "❌ Неверный пароль", 403
+
+        if not session.get('authenticated'):
+            return render_template('admin.html', authenticated=False)
+
+        # Статистика
+        user_count = get_user_count()
+        sub_count = len(get_subscribed_users())
+
+        return render_template('admin.html', authenticated=True, user_count=user_count, sub_count=sub_count)
+
     def run_flask():
         from waitress import serve
-        logger.info("🌐 Flask (Waitress) запускается на 0.0.0.0:8000...")
-        serve(app, host='0.0.0.0', port=8000)
+        logger.info("🌐 Flask (Waitress) запускается на 0.0.0.0:8001...")
+        serve(app, host='0.0.0.0', port=8001)
 
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
@@ -890,7 +986,6 @@ async def main():
             await asyncio.sleep(1)
     except KeyboardInterrupt:
         logger.info("🛑 Бот остановлен пользователем")
-        # Здесь можно добавить остановку scheduler и других ресурсов
         scheduler.shutdown(wait=False)
 
 if __name__ == "__main__":
