@@ -25,17 +25,12 @@
                     <td>{{ user[1] }}</td>
                     <td>{{ user[2] }}</td>
                     <td>
-                        {% if user[3] %}
-                            {% set expires_at = user[3] %}
-                            {% set now = moment().toISOString()[:19].replace('T', ' ') %} <!-- Это не сработает в Jinja2 напрямую -->
-                            <!-- Лучше обработать форматирование в Python -->
-                            {% if expires_at > now_str %}
-                                <span style="color: green;">Активна до: {{ expires_at[:10] }}</span>
-                            {% else %}
-                                <span style="color: red;">Просрочена (до: {{ expires_at[:10] }})</span>
-                            {% endif %}
+                        {% if 'Активна' in user[3] %}
+                            <span style="color: green;">{{ user[3] }}</span>
+                        {% elif 'Просрочена' in user[3] %}
+                            <span style="color: red;">{{ user[3] }}</span>
                         {% else %}
-                            <span style="color: gray;">Нет подписки</span>
+                            <span style="color: gray;">{{ user[3] }}</span>
                         {% endif %}
                     </td>
                     <td>
@@ -52,23 +47,5 @@
         </table>
         <a href="{{ url_for('admin_index') }}">Назад</a>
     </div>
-    <script>
-        // Передаем текущую дату в формате, который понимает Python (ISO без TZ)
-        // Это нужно для сравнения в шаблоне, т.к. Jinja2 не может легко сравнить даты
-        // Определим переменную now_str
-        const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
-        // Найдем все ячейки с датой окончания подписки
-        document.querySelectorAll('td:nth-child(4)').forEach(cell => {
-             // Ищем span, содержащий дату
-             const span = cell.querySelector('span');
-             if (span && span.textContent.includes('Активна до:') || span.textContent.includes('Просрочена')) {
-                 // Выносим логику в Python, т.к. JS не имеет доступа к expires_at из user
-                 // Лучше: форматировать дату и статус в Python и передавать в шаблон как строку
-                 // Но для простоты пока оставим так, если expires_at уже строка в нужном формате
-                 // В Python: datetime.now().isoformat(' ')
-                 // Сравниваем в Python.
-             }
-        });
-    </script>
 </body>
 </html>
