@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Удалить пользователя - Админка</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Удалить пользователя</h1>
+        <p style="color: red; font-weight: bold;">Внимание! Это действие необратимо. Все данные пользователя будут удалены.</p>
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Имя</th>
+                    <th>Дата регистрации</th>
+                    <th>Действие</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user in users %}
+                <tr>
+                    <td>{{ user[0] }}</td>
+                    <td>{{ user[1] }}</td>
+                    <td>{{ user[2] }}</td>
+                    <td>
+                        <a href="{{ url_for('admin_delete_user_confirm', user_id=user[0]) }}" 
+                           onclick="return confirm('Вы уверены, что хотите удалить пользователя {{ user[1] }} (ID: {{ user[0] }})? Это действие нельзя отменить.');"
+                           style="color: #dc3545; text-decoration: none; font-weight: bold;">
+                            Удалить
+                        </a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <a href="{{ url_for('admin_index') }}">Назад</a>
+    </div>
+</body>
+</html>

@@ -1149,24 +1149,25 @@ async def main():
             return redirect(url_for('admin_broadcast'))
         return render_template('admin_broadcast.html')
 
-    @admin_app.route('/admin/delete_user', methods=['GET', 'POST'])
+    @admin_app.route('/admin/delete_user')
     @admin_required
-    def admin_delete_user():
-        if request.method == 'POST':
-            user_id_str = request.form.get('user_id')
-            try:
-                user_id = int(user_id_str)
-                # Проверим, существует ли пользователь
-                cur.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
-                if not cur.fetchone():
-                    return "❌ Пользователь с таким ID не найден.", 404
-                delete_user_from_db(user_id)
-                logger.info(f"Администратор удалил пользователя {user_id}")
-                return redirect(url_for('admin_users')) # Перенаправляем на список пользователей
-            except ValueError:
-                return "❌ Неверный формат ID пользователя.", 400
-        # Если GET, показываем форму
-        return render_template('admin_delete_user.html')
+    def admin_delete_user_list():
+        # Загружаем список пользователей
+        users = get_users_list()
+        return render_template('admin_delete_user.html', users=users)
+
+# Новый маршрут для подтверждения и выполнения удаления
+@admin_app.route('/admin/delete_user_confirm/<int:user_id>')
+@admin_required
+def admin_delete_user_confirm(user_id):
+    # Проверим, существует ли пользователь
+    cur.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+    if not cur.fetchone():
+        return "❌ Пользователь с таким ID не найден.", 404
+    delete_user_from_db(user_id)
+    logger.info(f"Администратор удалил пользователя {user_id}")
+    # После удаления возвращаемся на страницу со списком для удаления
+    return redirect(url_for('admin_delete_user_list'))
 
     # --- Запуск Flask-серверов в отдельных потоках ---
     def run_webhook():
