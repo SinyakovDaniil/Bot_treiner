@@ -17,6 +17,7 @@ import threading
 import os
 import logging
 import traceback
+import datetime
 
 # --- Импортируем конфигурацию ---
 try:
@@ -155,8 +156,27 @@ def get_subscribed_users():
     return [row[0] for row in cur.fetchall()]
 
 def get_users_list():
-    cur.execute("SELECT user_id, name, created_at FROM users ORDER BY created_at DESC")
-    return cur.fetchall()
+    cur.execute("""
+        SELECT u.user_id, u.name, u.created_at, s.expires_at
+        FROM users u
+        LEFT JOIN subscriptions s ON u.user_id = s.user_id
+        ORDER BY u.created_at DESC
+    """)
+    raw_users = cur.fetchall()
+    processed_users = []
+    now = datetime.datetime.now()
+    for user in raw_users:
+        user_id, name, created_at, expires_at = user
+        sub_status = "Нет подписки"
+        if expires_at:
+            expires_dt = datetime.datetime.fromisoformat(expires_at)
+            if expires_dt > now:
+                sub_status = f"Активна до: {expires_dt.strftime('%Y-%m-%d')}"
+            else:
+                sub_status = f"Просрочена (до: {expires_dt.strftime('%Y-%m-%d')})"
+        # Возвращаем кортеж с дополнительным элементом - статусом подписки
+        processed_users.append((user_id, name, created_at, sub_status))
+    return processed_users
 
 def get_user_by_id(user_id):
     cur.execute("SELECT user_id, name FROM users WHERE user_id = ?", (user_id,))
@@ -325,7 +345,7 @@ async def cmd_start(message: types.Message):
                 """, (user_id, None, None, None, None, None, None, None, None)) # Заполняем остальные поля как None или значения по умолчанию
                 conn.commit() # Зафиксируем вставку
                 logger.info(f"[DEBUG] mark_trial_granted (через INSERT OR REPLACE) выполнена.")
-                msg = await message.answer("🎉 Привет! Тебе выдан **тестовый доступ на 7 дней**. Начни анкету: Как тебя зовут?")
+                msg = await message.answer("🎉 Привет! Тебе выдан тестовый доступ на 7 дней. Начни анкету: Как тебя зовут?")
                 logger.info(f"[DEBUG] Сообщение отправлено.")
             else:
                 logger.info(f"[DEBUG] Пробный период уже был помечен как выдан ранее (странно для нового юзера).")
@@ -900,6 +920,7 @@ async def process_level_callback(callback_query: types.CallbackQuery):
         "/food — получить питание\n"
         "/subscribe — оформить подписку\n"
         "/profile — посмотреть свой профиль"
+        "Так же тебе доступны другие комманды, по кнопке 'Меню'"
     )
     add_message_id(user_id, msg.message_id)
 
