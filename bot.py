@@ -152,7 +152,7 @@ def get_user_count():
     return cur.fetchone()[0]
 
 def get_subscribed_users():
-    cur.execute("SELECT user_id FROM subscriptions WHERE expires_at > ?", (datetime.now().isoformat(),))
+    cur.execute("SELECT user_id FROM subscriptions WHERE expires_at > ?", (datetime.datetime.now().isoformat(),))
     return [row[0] for row in cur.fetchall()]
 
 def get_users_list():
@@ -164,7 +164,7 @@ def get_users_list():
     """)
     raw_users = cur.fetchall()
     processed_users = []
-    now = datetime.datetime.now()
+    now = datetime.datetime.datetime.now()
     for user in raw_users:
         user_id, name, created_at, expires_at = user
         sub_status = "Нет подписки"
@@ -233,11 +233,11 @@ def is_subscribed(user_id):
     row = cur.fetchone()
     if row:
         expires_at = datetime.fromisoformat(row[0])
-        return datetime.now() < expires_at
+        return datetime.datetime.now() < expires_at
     return False
 
 def add_subscription(user_id, months=1):
-    expires_at = datetime.now() + timedelta(days=30 * months)
+    expires_at = datetime.datetime.now() + timedelta(days=30 * months)
     cur.execute("""
         INSERT OR REPLACE INTO subscriptions (user_id, expires_at)
         VALUES (?, ?)
@@ -245,7 +245,7 @@ def add_subscription(user_id, months=1):
     conn.commit()
 
 def grant_subscription(user_id, days=7):
-    expires_at = datetime.now() + timedelta(days=days)
+    expires_at = datetime.datetime.now() + timedelta(days=days)
     cur.execute("""
         INSERT OR REPLACE INTO subscriptions (user_id, expires_at)
         VALUES (?, ?)
@@ -291,7 +291,7 @@ def check_achievements(user_id):
         cur.execute("INSERT OR IGNORE INTO achievements (user_id, name) VALUES (?, ?)", (user_id, "Первая тренировка"))
         conn.commit()
 
-    now = datetime.now()
+    now = datetime.datetime.now()
     week_ago = now - timedelta(days=7)
     cur.execute("""
         SELECT COUNT(*) FROM trainings
@@ -531,7 +531,7 @@ async def send_training(message: types.Message):
         msg = await message.answer(f"Твоя тренировка на сегодня:\n\n{training}", reply_markup=keyboard)
         add_message_id(user_id, msg.message_id)
         await delete_old_messages(user_id)
-        next_date = datetime.now() + timedelta(days=2)
+        next_date = datetime.datetime.now() + timedelta(days=2)
         cur.execute("UPDATE users SET next_training_date = ? WHERE user_id = ?", (next_date.isoformat(), user_id))
         conn.commit()
 
@@ -655,7 +655,7 @@ async def cmd_schedule(message: types.Message):
 @dp.message(Command("report"))
 async def cmd_report(message: types.Message):
     user_id = message.from_user.id
-    now = datetime.now()
+    now = datetime.datetime.now()
     week_ago = now - timedelta(days=7)
     cur.execute("""
         SELECT COUNT(*) FROM trainings
@@ -947,7 +947,7 @@ async def training_completed_callback(callback_query: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "training_postpone")
 async def training_postpone_callback(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
-    next_date = datetime.now() + timedelta(days=1)
+    next_date = datetime.datetime.now() + timedelta(days=1)
     cur.execute("UPDATE users SET next_training_date = ? WHERE user_id = ?", (next_date.isoformat(), user_id))
     conn.commit()
     await callback_query.answer("✅ Тренировка перенесена на завтра.")
