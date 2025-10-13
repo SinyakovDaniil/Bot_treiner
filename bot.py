@@ -302,25 +302,57 @@ def check_achievements(user_id):
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
-    cur.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
-    user_exists = cur.fetchone()
-
-    if not user_exists:
-        logger.info(f"Новый пользователь: {user_id}")
-        # Проверяем, выдавался ли тестовый период
-        if not has_trial_granted(user_id):
-            grant_subscription(user_id, days=7)
-            mark_trial_granted(user_id)
-            msg = await message.answer("🎉 Привет! Тебе выдан **тестовый доступ на 7 дней**. Начни анкету: Как тебя зовут?")
+    logger.info(f"[DEBUG] /start вызван пользователем {user_id}")
+    try:
+        cur.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+        user_exists = cur.fetchone()
+        logger.info(f"[DEBUG] Результат SELECT: {user_exists}")
+        if not user_exists:
+            logger.info(f"[DEBUG] Пользователь {user_id} не найден в БД, считаю его новым.")
+            # Проверяем, выдавался ли тестовый период
+            # Т.к. запись не существует, has_trial_granted вернёт False
+            trial_granted_before = has_trial_granted(user_id)
+            logger.info(f"[DEBUG] has_trial_granted вернула: {trial_granted_before}")
+            if not trial_granted_before:
+                logger.info(f"[DEBUG] Пробный период ранее не выдавался. Выдаю.")
+                grant_subscription(user_id, days=7)
+                logger.info(f"[DEBUG] grant_subscription выполнена.")
+                # Вместо mark_trial_granted, вставим строку с trial_granted = 1
+                # Это гарантирует, что строка будет, и trial_granted = 1
+                cur.execute("""
+                    INSERT OR REPLACE INTO users (user_id, name, age, gender, height, weight, goal, training_location, level, created_at, trial_granted)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 1)
+                """, (user_id, None, None, None, None, None, None, None, None)) # Заполняем остальные поля как None или значения по умолчанию
+                conn.commit() # Зафиксируем вставку
+                logger.info(f"[DEBUG] mark_trial_granted (через INSERT OR REPLACE) выполнена.")
+                msg = await message.answer("🎉 Привет! Тебе выдан **тестовый доступ на 7 дней**. Начни анкету: Как тебя зовут?")
+                logger.info(f"[DEBUG] Сообщение отправлено.")
+            else:
+                logger.info(f"[DEBUG] Пробный период уже был помечен как выдан ранее (странно для нового юзера).")
+                msg = await message.answer("🎉 Привет! Начни анкету: Как тебя зовут?")
+                logger.info(f"[DEBUG] Альтернативное сообщение отправлено.")
         else:
-            msg = await message.answer("🎉 Привет! Начни анкету: Как тебя зовут?")
-    else:
-        logger.info(f"Повторный запуск от: {user_id}")
-        msg = await message.answer("Привет снова! Ты уже проходил анкету. Используй команды.")
+            logger.info(f"[DEBUG] Пользователь {user_id} уже существует в БД.")
+            msg = await message.answer("Привет снова! Ты уже проходил анкету. Используй команды.")
+            logger.info(f"[DEBUG] Сообщение 'повторный запуск' отправлено.")
 
-    user_states[user_id] = {"step": "name", "data": {}, "messages": []}
-    await delete_old_messages(user_id, keep_last=0)
-    add_message_id(user_id, msg.message_id)
+        # Всегда сбрасываем состояние и удаляем старые сообщения
+        user_states[user_id] = {"step": "name", "data": {}, "messages": []}
+        logger.info(f"[DEBUG] Состояние сброшено.")
+        await delete_old_messages(user_id, keep_last=0)
+        logger.info(f"[DEBUG] Старые сообщения удалены.")
+        add_message_id(user_id, msg.message_id)
+        logger.info(f"[DEBUG] ID сообщения добавлено.")
+    except Exception as e:
+        logger.error(f"[ERROR] Ошибка в обработчике /start: {e}", exc_info=True)
+        # Попробуем отправить сообщение об ошибке, если возможно
+        try:
+            await message.answer("❌ Произошла ошибка при обработке команды. Попробуйте позже.")
+        except:
+            pass # Игнорируем ошибку при отправке сообщения об ошибке
+        return # Возвращаемся, чтобы aiogram не считал обновление обработанным
+
+    logger.info(f"[DEBUG] /start успешно завершён для {user_id}.")
 
 @dp.message(Command("cancel"))
 async def cmd_cancel(message: types.Message):
