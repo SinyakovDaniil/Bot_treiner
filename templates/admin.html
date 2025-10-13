@@ -18,7 +18,7 @@
             <a href="{{ url_for('admin_grant') }}" class="btn">Выдать подписку</a>
             <a href="{{ url_for('admin_revoke') }}" class="btn">Отозвать подписку</a>
             <a href="{{ url_for('admin_broadcast') }}" class="btn">Рассылка</a>
-            <a href="{{ url_for('admin_delete_user') }}" class="btn" style="background-color: #dc3545;">❌ Удалить пользователя</a> <!-- Новая ссылка -->
+            <a href="{{ url_for('admin_delete_user', user_id=user[0]) }}" class="btn" style="background-color: #dc3545;">❌ Удалить пользователя</a> <!-- Новая ссылка -->
         </div>
     </div>
 </body>

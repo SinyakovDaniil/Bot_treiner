@@ -25,7 +25,7 @@
                     <td>{{ user[1] }}</td>
                     <td>{{ user[2] }}</td>
                     <td>
-                        <a href="{{ url_for('admin_delete_user_confirm', user_id=user[0]) }}" 
+                        <a href="{{ url_for('admin_delete_user', user_id=user[0]) }}" 
                            onclick="return confirm('Вы уверены, что хотите удалить пользователя {{ user[1] }} (ID: {{ user[0] }})? Это действие нельзя отменить.');"
                            style="color: #dc3545; text-decoration: none; font-weight: bold;">
                             Удалить
