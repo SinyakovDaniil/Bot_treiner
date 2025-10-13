@@ -162,6 +162,19 @@ def get_user_by_id(user_id):
     cur.execute("SELECT user_id, name FROM users WHERE user_id = ?", (user_id,))
     return cur.fetchone()
 
+def delete_user_from_db(user_id):
+    # Удаляем зависимости
+    cur.execute("DELETE FROM weights WHERE user_id = ?", (user_id,))
+    cur.execute("DELETE FROM trainings WHERE user_id = ?", (user_id,))
+    cur.execute("DELETE FROM progress WHERE user_id = ?", (user_id,))
+    cur.execute("DELETE FROM achievements WHERE user_id = ?", (user_id,))
+    cur.execute("DELETE FROM training_schedule WHERE user_id = ?", (user_id,))
+    cur.execute("DELETE FROM subscriptions WHERE user_id = ?", (user_id,))
+    # Удаляем самого пользователя
+    cur.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+    conn.commit()
+    logger.info(f"Пользователь {user_id} удалён из базы данных.")
+
 def save_user_profile(user_id, profile):
     cur.execute("""
         INSERT OR REPLACE INTO users (user_id, name, age, gender, height, weight, goal, training_location, level)
@@ -407,7 +420,7 @@ async def send_training(message: types.Message):
         return
 
     if not is_subscribed(user_id):
-        msg = await message.answer("🔒 Эта функция доступна только по подписке. Используй /subscribe, чтобы оформить.")
+        msg = await message.answer("🔒 Эта функция доступна по подписке. Используй /subscribe, чтобы оформить.")
         add_message_id(user_id, msg.message_id)
         return
 
@@ -486,7 +499,7 @@ async def send_food(message: types.Message):
         return
 
     if not is_subscribed(user_id):
-        msg = await message.answer("🔒 Эта функция доступна только по подписке. Используй /subscribe, чтобы оформить.")
+        msg = await message.answer("🔒 Эта функция доступна по подписке. Используй /subscribe, чтобы оформить.")
         add_message_id(user_id, msg.message_id)
         return
 
@@ -704,6 +717,7 @@ async def cmd_admin(message: types.Message):
         [InlineKeyboardButton(text="❌ Отозвать подписку", callback_data="admin_revoke_sub")],
         [InlineKeyboardButton(text="👥 Пользователи", callback_data="admin_users")],
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="❌ Удалить пользователя", callback_data="admin_delete_user")], # <-- Новая кнопка
     ])
     msg = await message.answer("🔐 Панель администратора:", reply_markup=keyboard)
     add_message_id(user_id, msg.message_id)
@@ -736,6 +750,9 @@ async def admin_callback_handler(callback_query: types.CallbackQuery):
 
     elif action == "admin_broadcast":
         await callback_query.answer("Функция 'Рассылка' доступна в веб-админке.", show_alert=True)
+
+    elif action == "admin_delete_user":
+        await callback_query.answer("Функция 'Удалить пользователя' доступна в веб-админке.", show_alert=True)
 
     await callback_query.message.edit_reply_markup(reply_markup=None)
 
@@ -1131,6 +1148,25 @@ async def main():
             logger.info(f"Рассылка завершена. Успешно: {sent_count}, Ошибок: {failed_count}")
             return redirect(url_for('admin_broadcast'))
         return render_template('admin_broadcast.html')
+
+    @admin_app.route('/admin/delete_user', methods=['GET', 'POST'])
+    @admin_required
+    def admin_delete_user():
+        if request.method == 'POST':
+            user_id_str = request.form.get('user_id')
+            try:
+                user_id = int(user_id_str)
+                # Проверим, существует ли пользователь
+                cur.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+                if not cur.fetchone():
+                    return "❌ Пользователь с таким ID не найден.", 404
+                delete_user_from_db(user_id)
+                logger.info(f"Администратор удалил пользователя {user_id}")
+                return redirect(url_for('admin_users')) # Перенаправляем на список пользователей
+            except ValueError:
+                return "❌ Неверный формат ID пользователя.", 400
+        # Если GET, показываем форму
+        return render_template('admin_delete_user.html')
 
     # --- Запуск Flask-серверов в отдельных потоках ---
     def run_webhook():
