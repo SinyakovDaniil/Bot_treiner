@@ -16,9 +16,12 @@ if not OPENROUTER_API_KEY:
 
 # --- ЮMoney (вместо Robokassa) ---
 # Идентификатор магазина (Shop ID) из личного кабинета ЮMoney/ЮKassa
-YOOMONEY_SHOP_ID = 'your_yoomoney_shop_id'  # <-- Заменить
-# Секретный ключ для проверки платежей (Notification secret)
-YOOMONEY_SECRET_KEY = 'your_yoomoney_secret_key'  # <-- Заменить
+YOOMONEY_SHOP_ID = os.getenv("YOOMONEY_SHOP_ID")
+# Секретный ключ для проверки уведомлений (Notification secret)
+YOOMONEY_SECRET_KEY = os.getenv("YOOMONEY_SECRET_KEY")
+
+if not YOOMONEY_SHOP_ID or not YOOMONEY_SECRET_KEY:
+    raise ValueError("❌ Данные ЮMoney (Shop ID или Secret Key) не найдены в key.env файле!")
 
 # --- Вебхуки ---
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
