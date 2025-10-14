@@ -290,6 +290,7 @@ async def cmd_cancel(message: types.Message):
 # --- YooKassa оплата ---
 @dp.message(Command("subscribe"))
 async def cmd_subscribe(message: types.Message):
+    logger.info("❌ НАЧАЛО ОБРАБОТЧИКА /subscibe") # <-- Такой лог должен быть
     user_id = message.from_user.id
 
     # Примеры цен (в копейках: 149.00 руб = 14900 коп)
