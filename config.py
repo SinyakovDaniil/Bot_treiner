@@ -14,12 +14,11 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 if not OPENROUTER_API_KEY:
     raise ValueError("OPENROUTER_API_KEY не найден в key.env файле!")
 
-# --- Robokassa ---
-ROBOKASSA_LOGIN = os.getenv("ROBOKASSA_LOGIN")
-ROBOKASSA_PASS1 = os.getenv("ROBOKASSA_PASS1")
-ROBOKASSA_PASS2 = os.getenv("ROBOKASSA_PASS2")
-if not ROBOKASSA_LOGIN or not ROBOKASSA_PASS1 or not ROBOKASSA_PASS2:
-    raise ValueError("Данные Robokassa не найдены в key.env файле!")
+# --- ЮMoney (вместо Robokassa) ---
+# Идентификатор магазина (Shop ID) из личного кабинета ЮMoney/ЮKassa
+YOOMONEY_SHOP_ID = 'your_yoomoney_shop_id'  # <-- Заменить
+# Секретный ключ для проверки платежей (Notification secret)
+YOOMONEY_SECRET_KEY = 'your_yoomoney_secret_key'  # <-- Заменить
 
 # --- Вебхуки ---
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
