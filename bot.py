@@ -354,6 +354,7 @@ async def cmd_cancel(message: types.Message):
 # --- ЮMoney оплата ---
 @dp.message(Command("subscribe"))
 async def cmd_subscribe(message: types.Message):
+    logger.info(f"[DEBUG] provider_token = '{provider_token}'")
     user_id = message.from_user.id
 
     # Параметры для Telegram Payments (интеграция с ЮMoney)
@@ -376,7 +377,7 @@ async def cmd_subscribe(message: types.Message):
     # Для теста используем тестовый токен (замените на реальный для продакшена)
     provider_token = "390540012:LIVE:80188" # <-- ЗАМЕНИТЕ НА РЕАЛЬНЫЙ provider_token от Telegram/YooMoney
     
-    if not provider_token or provider_token == "390540012:LIVE:80188":
+    if not provider_token or provider_token.startswith("390540012:LIVE:80188"):
         msg = await message.answer("❌ Оплата временно недоступна. Свяжитесь с администратором.")
         add_message_id(user_id, msg.message_id)
         return
