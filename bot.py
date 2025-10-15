@@ -374,9 +374,9 @@ async def cmd_subscribe(message: types.Message):
     
     # Правильный способ: получить provider_token через BotFather
     # Для теста используем тестовый токен (замените на реальный для продакшена)
-    provider_token = "123456789:TEST:..." # <-- ЗАМЕНИТЕ НА РЕАЛЬНЫЙ provider_token от Telegram/YooMoney
+    provider_token = "390540012:LIVE:80188" # <-- ЗАМЕНИТЕ НА РЕАЛЬНЫЙ provider_token от Telegram/YooMoney
     
-    if not provider_token or provider_token == "123456789:TEST:...":
+    if not provider_token or provider_token == "390540012:LIVE:80188":
         msg = await message.answer("❌ Оплата временно недоступна. Свяжитесь с администратором.")
         add_message_id(user_id, msg.message_id)
         return
