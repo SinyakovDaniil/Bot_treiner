@@ -360,120 +360,151 @@ async def cmd_cancel(message: types.Message):
         msg = await message.answer("Нет активной анкеты.")
         add_message_id(user_id, msg.message_id)
 
-# --- ЮMoney оплата ---
+# --- ЮMoney оплата через Telegram Payments с выбором тарифа ---
 @dp.message(Command("subscribe"))
 async def cmd_subscribe(message: types.Message):
     """
     Обработчик команды /subscribe.
-    Отправляет пользователю счёт на оплату через Telegram Payments (интеграция с ЮMoney).
-    Также предлагает кнопку для тестового периода, если он ещё не был выдан.
+    Отправляет пользователю клавиатуру с выбором тарифного плана.
     """
     user_id = message.from_user.id
     logger.info(f"Получена команда /subscribe от пользователя {user_id}")
 
-    # --- Оборачиваем ВСЁ в try...except для отлова любых ошибок ---
+    # --- Проверка provider_token ---
+    if not YOOMONEY_PROVIDER_TOKEN or YOOMONEY_PROVIDER_TOKEN in ["123456789:TEST:...", ""]:
+        logger.error(f"❌ provider_token не настроен для пользователя {user_id}.")
+        msg = await message.answer(
+            "❌ Оплата временно недоступна. Свяжитесь с администратором."
+        )
+        add_message_id(user_id, msg.message_id)
+        return
+
+    # --- Создаем клавиатуру с вариантами подписки ---
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="1 месяц - 149 руб", callback_data="sub_1_149")],
+        [InlineKeyboardButton(text="6 месяцев - 7494 руб (1249 руб/мес)", callback_data="sub_6_7494")],
+        [InlineKeyboardButton(text="12 месяцев - 14988 руб (1249 руб/мес)", callback_data="sub_12_14988")],
+    ])
+
+    # --- Отправляем сообщение с выбором тарифа ---
+    msg = await message.answer(
+        "Выберите тарифный план:",
+        reply_markup=keyboard
+    )
+    add_message_id(user_id, msg.message_id)
+
+# --- Обработчик выбора тарифа ---
+@dp.callback_query(lambda c: c.data.startswith("sub_"))
+async def process_subscription_callback(callback_query: types.CallbackQuery):
+    """
+    Обработчик выбора тарифного плана.
+    Отправляет пользователю счёт на оплату выбранного плана.
+    """
+    user_id = callback_query.from_user.id
+    data = callback_query.data
+    logger.info(f"Пользователь {user_id} выбрал тариф: {data}")
+
+    # --- Разбираем callback_data, например, "sub_1_149" ---
+    parts = data.split('_')
+    if len(parts) != 3:
+        await callback_query.answer("❌ Неверный формат данных.", show_alert=True)
+        return
+
     try:
-        # --- Проверка provider_token ---
-        if not YOOMONEY_PROVIDER_TOKEN or YOOMONEY_PROVIDER_TOKEN in ["123456789:TEST:...", ""]:
-            logger.error(f"❌ provider_token не настроен для пользователя {user_id}.")
-            msg = await message.answer(
-                "❌ Оплата временно недоступна. Свяжитесь с администратором."
-            )
-            add_message_id(user_id, msg.message_id)
-            return # <-- ВАЖНО: return после отправки сообщения об ошибке
+        months = int(parts[1])
+        price_rub = int(parts[2]) # Цена в рублях
+        price_kopecks = price_rub * 100 # Переводим в копейки для Telegram Payments
+    except ValueError:
+        await callback_query.answer("❌ Ошибка обработки данных тарифа.", show_alert=True)
+        return
 
-        # --- Подготовка счёта ---
-        prices = [
-            LabeledPrice(label="Подписка на 1 месяц", amount=49900),  # 149.00 RUB в копейках
-            LabeledPrice(label="Подписка на 6 месяцев", amount=249900),  # 149.00 RUB в копейках
-            LabeledPrice(label="Подписка на 12 месяцев", amount=499900),  # 149.00 RUB в копейках
-        ]
+    # --- Подготовка счёта ---
+    prices = [
+        LabeledPrice(label=f"Подписка на {months} месяцев", amount=price_kopecks),
+    ]
 
-        payload_data = {
-            "user_id": user_id,
-            "subscription_type": "monthly"
-        }
-        payload_json = json.dumps(payload_data) # Преобразуем данные в JSON строку для payload
+    # --- Формируем payload с информацией о тарифе ---
+    payload_data = {
+        "user_id": user_id,
+        "months": months,
+        "price_rub": price_rub
+    }
+    payload_json = json.dumps(payload_data) # Преобразуем в JSON строку
 
-        # --- Отправка счёта через Telegram Payments ---
-        logger.info(f"Попытка отправки счёта пользователю {user_id}...")
+    # --- Отправка счёта через Telegram Payments ---
+    try:
         sent_invoice = await bot.send_invoice(
             chat_id=user_id,
-            title="Подписка на 1 месяц",
-            description="Доступ к тренировкам и питанию на 30 дней",
-            payload=payload_json, # Уникальный идентификатор заказа
+            title=f"Подписка на {months} месяцев",
+            description=f"Доступ к тренировкам и питанию на {months} месяцев",
+            payload=payload_json, # Передаем данные о тарифе
             provider_token=YOOMONEY_PROVIDER_TOKEN, # Реальный токен от Telegram Payments
             currency="RUB",
             prices=prices,
-            start_parameter="subscribe_monthly", # Для deep-linking
-            is_flexible=False # True, если нужно рассчитать доставку
+            start_parameter=f"subscribe_{months}_months", # Для deep-linking
+            is_flexible=False
         )
-        logger.info(f"✅ Счет на 1 месяц отправлен пользователю {user_id}. Message ID: {sent_invoice.message_id}")
+        logger.info(f"✅ Счет на {months} месяцев ({price_rub} руб) отправлен пользователю {user_id}. Message ID: {sent_invoice.message_id}")
 
-        # --- ОБЯЗАТЕЛЬНО: Отправляем подтверждающее сообщение ---
-        # Без этого aiogram может считать апдейт "не обработанным"
-        confirmation_msg = await message.answer("✅ Счёт на оплату отправлен. Проверь, пожалуйста, диалог с ботом.")
-        add_message_id(user_id, confirmation_msg.message_id)
-
-        # --- Предложение тестового периода (если не выдавался) ---
-        logger.info(f"Проверка наличия тестового периода для пользователя {user_id}...")
-        if not has_trial_granted(user_id):
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🎁 Тестовый период (7 дней)", callback_data="trial_7")]
-            ])
-            offer_msg = await message.answer(
-                "Хочешь попробовать бесплатно?",
-                reply_markup=keyboard
-            )
-            add_message_id(user_id, offer_msg.message_id)
-            logger.info(f"✅ Предложение тестового периода отправлено пользователю {user_id}.")
-        else:
-            logger.info(f"ℹ️ Тестовый период уже был выдан пользователю {user_id}.")
+        # --- Подтверждаем callback_query ---
+        await callback_query.answer()
 
     except Exception as e:
-        # --- Ловим и логируем ЛЮБУЮ ошибку ---
-        logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА в обработчике /subscribe для пользователя {user_id}: {e}", exc_info=True)
-        # Пытаемся отправить сообщение об ошибке пользователю
+        logger.error(f"❌ Ошибка при отправке счёта пользователю {user_id}: {e}", exc_info=True)
+        await callback_query.answer("❌ Ошибка при создании счёта. Попробуйте позже.", show_alert=True)
+        # Отправляем сообщение об ошибке пользователю отдельно
         try:
-            await message.answer(
-                "❌ Произошла критическая ошибка при обработке команды. Попробуйте позже или свяжитесь с администратором."
-            )
+            await bot.send_message(user_id, "❌ Ошибка при создании счёта. Попробуйте позже или свяжитесь с администратором.")
         except:
-            logger.warning(f"Не удалось отправить сообщение об ошибке пользователю {user_id}.")
-            pass # Игнорируем ошибку при отправке сообщения об ошибке
+             pass # Игнорируем ошибку при отправке сообщения об ошибке
 
-
-
-        
-# Обработчик pre_checkout_query для Telegram Payments
+# --- Обработчик pre_checkout_query для Telegram Payments ---
 @dp.pre_checkout_query()
 async def process_pre_checkout_query(pre_checkout_query: types.PreCheckoutQuery):
-    # Всегда отвечаем OK
+    """
+    Обработчик запроса на предоплату.
+    Всегда отвечаем OK, если не нужно проверять адрес/доставку.
+    """
+    logger.info(f"Получен PreCheckoutQuery от {pre_checkout_query.from_user.id}")
     await pre_checkout_query.answer(ok=True)
-    logger.info(f"Pre-checkout query обработан для {pre_checkout_query.from_user.id}")
+    logger.info(f"PreCheckoutQuery для {pre_checkout_query.from_user.id} одобрен")
 
-# Обработчик успешной оплаты
+# --- Обработчик успешной оплаты ---
 @dp.message(lambda m: m.content_type == 'successful_payment')
 async def process_successful_payment(message: types.Message):
+    """
+    Обработчик успешной оплаты.
+    Читает payload, извлекает количество месяцев и оформляет подписку.
+    """
     user_id = message.from_user.id
     payment_info = message.successful_payment
-    
     logger.info(f"Успешная оплата от {user_id}: {payment_info.invoice_payload}")
-    
-    # Проверяем, за что была оплата
-    if payment_info.invoice_payload == "subscription_1_month":
+
+    try:
+        # --- Десериализуем payload, который мы отправляли в send_invoice ---
+        payload_data = json.loads(payment_info.invoice_payload)
+
+        # --- Извлекаем информацию о тарифе ---
+        months_purchased = payload_data.get("months", 1)
+        price_paid_rub = payload_data.get("price_rub", 0)
+        logger.info(f"Пользователь {user_id} оплатил {price_paid_rub} руб за {months_purchased} месяцев.")
+
+        # --- Оформляем подписку на N месяцев ---
+        add_subscription(user_id, months=months_purchased)
+        msg = await message.answer(f"✅ Спасибо за покупку! Подписка на {months_purchased} месяцев активна.")
+        add_message_id(user_id, msg.message_id)
+
+    except json.JSONDecodeError:
+        logger.error(f"Ошибка декодирования payload для пользователя {user_id}: {payment_info.invoice_payload}")
+        msg = await message.answer("✅ Оплата прошла успешно! Подписка оформлена.")
+        add_message_id(user_id, msg.message_id)
+        # Можно оформить подписку по умолчанию, например, на 1 месяц
         add_subscription(user_id, months=1)
-        msg = await message.answer("✅ Спасибо за покупку! Подписка на 1 месяц активирована.")
+    except Exception as e:
+        logger.error(f"Ошибка при обработке успешной оплаты для {user_id}: {e}", exc_info=True)
+        msg = await message.answer("✅ Оплата прошла успешно! Возникла ошибка при оформлении подписки, но деньги списаны. Свяжитесь с администратором.")
         add_message_id(user_id, msg.message_id)
-    elif payment_info.invoice_payload == "trial_7_days":
-        grant_subscription(user_id, days=7)
-        mark_trial_granted(user_id)
-        msg = await message.answer("✅ Тестовый период на 7 дней активирован!")
-        add_message_id(user_id, msg.message_id)
-    else:
-        logger.warning(f"Неизвестный payload: {payment_info.invoice_payload}")
-        msg = await message.answer("✅ Оплата прошла успешно!")
-        add_message_id(user_id, msg.message_id)
+        # TODO: Здесь желательно уведомить админа о проблеме
 
 @dp.callback_query(lambda c: c.data == "trial_7")
 async def process_trial_callback(callback_query: types.CallbackQuery):
