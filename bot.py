@@ -354,29 +354,10 @@ async def cmd_cancel(message: types.Message):
 # --- ЮMoney оплата ---
 @dp.message(Command("subscribe"))
 async def cmd_subscribe(message: types.Message):
-    logger.info(f"[DEBUG] provider_token = '{provider_token}'")
     user_id = message.from_user.id
+    logger.info(f"[DEBUG] provider_token = '{provider_token}'") # <-- Для отладки
 
-    # Параметры для Telegram Payments (интеграция с ЮMoney)
-    # Используем YOOMONEY_SHOP_ID как provider_token для теста
-    # В реальности, для Telegram Payments нужен специальный provider_token от Telegram
-    # Но если вы используете ЮMoney, скорее всего, это будет ваш YOOMONEY_SHOP_ID
-    # или специальный токен, полученный через BotFather
-    
-    # Для тестирования можно использовать тестовый provider_token от Telegram
-    # provider_token = "123456789:TEST:..." 
-    # Но если вы настроили через BotFather, используйте свой
-    
-    # ВАЖНО: Убедитесь, что provider_token корректен
-    # Он обычно выглядит как "123456789:AA..." или "123456789:TEST:..."
-    
-    # Пример с использованием YOOMONEY_SHOP_ID как заглушки (это НЕВЕРНО для продакшена)
-    # provider_token = YOOMONEY_SHOP_ID # <-- НЕПРАВИЛЬНО
-    
-    # Правильный способ: получить provider_token через BotFather
-    # Для теста используем тестовый токен (замените на реальный для продакшена)
-    provider_token = "390540012:LIVE:80188" # <-- ЗАМЕНИТЕ НА РЕАЛЬНЫЙ provider_token от Telegram/YooMoney
-    
+    # Проверяем, валиден ли токен
     if not provider_token or provider_token.startswith("390540012:LIVE:80188"):
         msg = await message.answer("❌ Оплата временно недоступна. Свяжитесь с администратором.")
         add_message_id(user_id, msg.message_id)
@@ -393,13 +374,13 @@ async def cmd_subscribe(message: types.Message):
             title="Подписка на 1 месяц",
             description="Доступ к тренировкам и питанию на 30 дней",
             payload="subscription_1_month", # Уникальный идентификатор заказа
-            provider_token=provider_token, # Токен от ЮMoney/Telegram Payments
+            provider_token=provider_token, # Токен от Telegram Payments
             currency="RUB",
             prices=prices,
             start_parameter="subscribe_monthly"
         )
         logger.info(f"Счет отправлен пользователю {user_id}")
-        
+
         # Проверяем, выдавался ли тестовый период
         if not has_trial_granted(user_id):
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -407,12 +388,11 @@ async def cmd_subscribe(message: types.Message):
             ])
             msg = await message.answer("Или попробуй бесплатно на 7 дней!", reply_markup=keyboard)
             add_message_id(user_id, msg.message_id)
-            
+
     except Exception as e:
         logger.error(f"Ошибка при отправке счета: {e}")
         msg = await message.answer("❌ Ошибка при создании счета. Попробуйте позже.")
         add_message_id(user_id, msg.message_id)
-
 # Обработчик pre_checkout_query для Telegram Payments
 @dp.pre_checkout_query()
 async def process_pre_checkout_query(pre_checkout_query: types.PreCheckoutQuery):
