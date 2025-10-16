@@ -362,39 +362,40 @@ async def cmd_subscribe(message: types.Message):
     user_id = message.from_user.id
     logger.info(f"Получена команда /subscribe от пользователя {user_id}")
 
-    # --- Проверка provider_token ---
-    if not YOOMONEY_PROVIDER_TOKEN or YOOMONEY_PROVIDER_TOKEN in ["123456789:TEST:...", ""]:
-        logger.error(f"❌ provider_token не настроен для пользователя {user_id}.")
-        msg = await message.answer(
-            "❌ Оплата временно недоступна. Свяжитесь с администратором."
-        )
-        add_message_id(user_id, msg.message_id)
-        return
-
-    # --- Подготовка счёта ---
-    prices = [
-        LabeledPrice(label="Подписка на 1 месяц", amount=14900),  # 149.00 RUB в копейках
-    ]
-
-    payload_data = {
-        "user_id": user_id,
-        "subscription_type": "monthly"
-    }
-    payload_json = json.dumps(payload_data)
-
-    # --- Отправка счёта через Telegram Payments ---
+    # --- Оборачиваем ВСЁ в try...except для отлова любых ошибок ---
     try:
-        # Отправляем счёт
+        # --- Проверка provider_token ---
+        if not YOOMONEY_PROVIDER_TOKEN or YOOMONEY_PROVIDER_TOKEN in ["123456789:TEST:...", ""]:
+            logger.error(f"❌ provider_token не настроен для пользователя {user_id}.")
+            msg = await message.answer(
+                "❌ Оплата временно недоступна. Свяжитесь с администратором."
+            )
+            add_message_id(user_id, msg.message_id)
+            return # <-- ВАЖНО: return после отправки сообщения об ошибке
+
+        # --- Подготовка счёта ---
+        prices = [
+            LabeledPrice(label="Подписка на 1 месяц", amount=14900),  # 149.00 RUB в копейках
+        ]
+
+        payload_data = {
+            "user_id": user_id,
+            "subscription_type": "monthly"
+        }
+        payload_json = json.dumps(payload_data) # Преобразуем данные в JSON строку для payload
+
+        # --- Отправка счёта через Telegram Payments ---
+        logger.info(f"Попытка отправки счёта пользователю {user_id}...")
         sent_invoice = await bot.send_invoice(
             chat_id=user_id,
             title="Подписка на 1 месяц",
             description="Доступ к тренировкам и питанию на 30 дней",
-            payload=payload_json,
-            provider_token=YOOMONEY_PROVIDER_TOKEN,
+            payload=payload_json, # Уникальный идентификатор заказа
+            provider_token=YOOMONEY_PROVIDER_TOKEN, # Реальный токен от Telegram Payments
             currency="RUB",
             prices=prices,
-            start_parameter="subscribe_monthly",
-            is_flexible=False
+            start_parameter="subscribe_monthly", # Для deep-linking
+            is_flexible=False # True, если нужно рассчитать доставку
         )
         logger.info(f"✅ Счет на 1 месяц отправлен пользователю {user_id}. Message ID: {sent_invoice.message_id}")
 
@@ -403,7 +404,8 @@ async def cmd_subscribe(message: types.Message):
         confirmation_msg = await message.answer("✅ Счёт на оплату отправлен. Проверь, пожалуйста, диалог с ботом.")
         add_message_id(user_id, confirmation_msg.message_id)
 
-        # --- Предложение тестового периода ---
+        # --- Предложение тестового периода (если не выдавался) ---
+        logger.info(f"Проверка наличия тестового периода для пользователя {user_id}...")
         if not has_trial_granted(user_id):
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🎁 Тестовый период (7 дней)", callback_data="trial_7")]
@@ -413,13 +415,22 @@ async def cmd_subscribe(message: types.Message):
                 reply_markup=keyboard
             )
             add_message_id(user_id, offer_msg.message_id)
+            logger.info(f"✅ Предложение тестового периода отправлено пользователю {user_id}.")
+        else:
+            logger.info(f"ℹ️ Тестовый период уже был выдан пользователю {user_id}.")
 
     except Exception as e:
-        logger.error(f"❌ Ошибка при отправке счёта пользователю {user_id}: {e}", exc_info=True)
-        error_msg = await message.answer(
-            "❌ Ошибка при создании счёта. Попробуйте позже или свяжитесь с администратором."
-        )
-        add_message_id(user_id, error_msg.message_id)
+        # --- Ловим и логируем ЛЮБУЮ ошибку ---
+        logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА в обработчике /subscribe для пользователя {user_id}: {e}", exc_info=True)
+        # Пытаемся отправить сообщение об ошибке пользователю
+        try:
+            await message.answer(
+                "❌ Произошла критическая ошибка при обработке команды. Попробуйте позже или свяжитесь с администратором."
+            )
+        except:
+            logger.warning(f"Не удалось отправить сообщение об ошибке пользователю {user_id}.")
+            pass # Игнорируем ошибку при отправке сообщения об ошибке
+
 
 
         
