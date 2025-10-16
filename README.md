@@ -19,3 +19,5 @@ Telegram-бот с ИИ-тренером, тренировками, питани
 1. Установите зависимости:
    ```bash
    pip install -r requirements.txt
+
+   sudo apt update
