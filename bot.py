@@ -404,30 +404,32 @@ async def process_subscription_callback(callback_query: types.CallbackQuery):
     data = callback_query.data
     logger.info(f"Пользователь {user_id} выбрал тариф: {data}")
 
-    # --- Разбираем callback_data, например, "sub_1_149" ---
+    # --- Разбираем callback_data, например, "sub_1_49" ---
     parts = data.split('_')
     if len(parts) != 3:
         await callback_query.answer("❌ Неверный формат данных.", show_alert=True)
         return
 
     try:
-        months = int(parts[1])
-        price_rub = int(parts[2]) # Цена в рублях
-        price_kopecks = price_rub * 100 # Переводим в копейки для Telegram Payments
+        months = int(parts[1]) # "1" -> 1
+        price_rub_str = parts[2] # "49" или "49.0"
+        # ✅ Корректное преобразование строки в int
+        price_rub = int(float(price_rub_str)) # ✅ int(float("49")) -> 49, int(float("49.0")) -> 49
+        price_kopecks = price_rub * 100 # ✅ 49 * 100 = 4900 (int)
     except ValueError:
         await callback_query.answer("❌ Ошибка обработки данных тарифа.", show_alert=True)
         return
 
     # --- Подготовка счёта ---
     prices = [
-        LabeledPrice(label=f"Подписка на {months} месяцев", amount=price_kopecks),
+        LabeledPrice(label=f"Подписка на {months} месяцев", amount=price_kopecks), # ✅ amount=int
     ]
 
     # --- Формируем payload с информацией о тарифе ---
     payload_data = {
         "user_id": user_id,
         "months": months,
-        "price_rub": price_rub
+        "price_rub": price_rub # ✅ Передаём цену в рублях (int)
     }
     payload_json = json.dumps(payload_data) # Преобразуем в JSON строку
 
@@ -440,7 +442,7 @@ async def process_subscription_callback(callback_query: types.CallbackQuery):
             payload=payload_json, # Передаем данные о тарифе
             provider_token=YOOMONEY_PROVIDER_TOKEN, # Реальный токен от Telegram Payments
             currency="RUB",
-            prices=prices,
+            prices=prices, # ✅ prices с amount=int
             start_parameter=f"subscribe_{months}_months", # Для deep-linking
             is_flexible=False
         )
@@ -456,7 +458,8 @@ async def process_subscription_callback(callback_query: types.CallbackQuery):
         try:
             await bot.send_message(user_id, "❌ Ошибка при создании счёта. Попробуйте позже или свяжитесь с администратором.")
         except:
-             pass # Игнорируем ошибку при отправке сообщения об ошибке
+            pass # Игнорируем ошибку при отправке сообщения об ошибке
+
 
 # --- Обработчик pre_checkout_query для Telegram Payments ---
 @dp.pre_checkout_query()
