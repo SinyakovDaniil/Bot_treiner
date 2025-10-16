@@ -16,12 +16,18 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 if not OPENROUTER_API_KEY:
     raise ValueError("❌ OPENROUTER_API_KEY не найден в key.env файле!")
 
-# --- ЮMoney ---
+# --- ЮMoney (для API, например, вебхуков/проверки платежей) ---
 YOOMONEY_SHOP_ID = os.getenv("YOOMONEY_SHOP_ID")
 YOOMONEY_SECRET_KEY = os.getenv("YOOMONEY_SECRET_KEY")
 
 if not YOOMONEY_SHOP_ID or not YOOMONEY_SECRET_KEY:
     raise ValueError("❌ Данные ЮMoney (Shop ID или Secret Key) не найдены в key.env файле!")
+
+# --- ЮMoney (для Telegram Payments - provider_token) ---
+# ВАЖНО: Этот токен получается через @BotFather, а не с сайта ЮMoney
+YOOMONEY_PROVIDER_TOKEN = os.getenv("YOOMONEY_PROVIDER_TOKEN")
+# Примечание: Нет строгой проверки, так как может быть не нужен для всех функций,
+# но в коде /subscribe должна быть проверка if not YOOMONEY_PROVIDER_TOKEN
 
 # --- Вебхуки ---
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")

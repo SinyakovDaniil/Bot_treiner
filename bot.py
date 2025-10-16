@@ -354,45 +354,84 @@ async def cmd_cancel(message: types.Message):
 # --- ЮMoney оплата ---
 @dp.message(Command("subscribe"))
 async def cmd_subscribe(message: types.Message):
+    """
+    Обработчик команды /subscribe.
+    Отправляет пользователю счёт на оплату через Telegram Payments (интеграция с ЮMoney).
+    Также предлагает кнопку для тестового периода, если он ещё не был выдан.
+    """
     user_id = message.from_user.id
-    logger.info(f"[DEBUG] provider_token = '{provider_token}'") # <-- Для отладки
+    logger.info(f"Получена команда /subscribe от пользователя {user_id}")
 
-    # Проверяем, валиден ли токен
-    if not provider_token or provider_token.startswith("390540012:LIVE:80188"):
-        msg = await message.answer("❌ Оплата временно недоступна. Свяжитесь с администратором.")
+    # --- Проверка provider_token ---
+    # ВАЖНО: provider_token должен быть реальным, полученным через @BotFather
+    # Пример правильного токена: "123456789:PROVIDER_TOKEN_HERE"
+    # Для тестирования можно использовать тестовый токен от Telegram, но он тоже должен быть "настоящим"
+    
+    # ПРОВЕРКА: Если токен не задан или равен тестовой заглушке
+    if not YOOMONEY_PROVIDER_TOKEN or YOOMONEY_PROVIDER_TOKEN in ["123456789:TEST:...", ""]:
+        logger.error(f"❌ provider_token не настроен для пользователя {user_id}.")
+        msg = await message.answer(
+            "❌ Оплата временно недоступна. Свяжитесь с администратором."
+        )
         add_message_id(user_id, msg.message_id)
         return
 
+    # --- Подготовка счёта ---
     prices = [
-        LabeledPrice(label="1 месяц", amount=14900), # 149.00 руб
+        LabeledPrice(label="Подписка на 1 месяц", amount=14900),  # 149.00 RUB в копейках
+        # LabeledPrice(label="Скидка", amount=-1000), # Пример скидки, убери, если не нужно
     ]
 
-    # Отправляем счет
+    payload_data = {
+        "user_id": user_id,
+        "subscription_type": "monthly"
+    }
+    payload_json = json.dumps(payload_data) # Преобразуем данные в JSON строку для payload
+
+    # --- Отправка счёта через Telegram Payments ---
     try:
-        await bot.send_invoice(
+        sent_invoice = await bot.send_invoice(
             chat_id=user_id,
             title="Подписка на 1 месяц",
             description="Доступ к тренировкам и питанию на 30 дней",
-            payload="subscription_1_month", # Уникальный идентификатор заказа
-            provider_token=provider_token, # Токен от Telegram Payments
+            payload=payload_json, # Уникальный идентификатор заказа, можно передавать данные
+            provider_token=YOOMONEY_PROVIDER_TOKEN, # Реальный токен от Telegram Payments
             currency="RUB",
             prices=prices,
-            start_parameter="subscribe_monthly"
+            start_parameter="subscribe_monthly", # Для deep-linking, если нужно
+            # photo_url="https://example.com/subscription_image.jpg", # Опционально
+            # photo_size=64,
+            # photo_width=800,
+            # photo_height=450,
+            # need_email=True, # Опционально
+            # send_email_to_provider=True, # Опционально
+            is_flexible=False # True, если нужно рассчитать доставку (не используется для подписки)
         )
-        logger.info(f"Счет отправлен пользователю {user_id}")
+        logger.info(f"✅ Счет на 1 месяц отправлен пользователю {user_id}. Message ID: {sent_invoice.message_id}")
 
+        # --- Предложение тестового периода (если не выдавался) ---
         # Проверяем, выдавался ли тестовый период
         if not has_trial_granted(user_id):
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🎁 Тестовый период (7 дней)", callback_data="trial_7")]
             ])
-            msg = await message.answer("Или попробуй бесплатно на 7 дней!", reply_markup=keyboard)
+            msg = await message.answer(
+                "Хочешь попробовать бесплатно?",
+                reply_markup=keyboard
+            )
             add_message_id(user_id, msg.message_id)
+        else:
+            # Можно отправить другое сообщение, если нужно
+            pass
 
     except Exception as e:
-        logger.error(f"Ошибка при отправке счета: {e}")
-        msg = await message.answer("❌ Ошибка при создании счета. Попробуйте позже.")
+        logger.error(f"❌ Ошибка при отправке счёта пользователю {user_id}: {e}", exc_info=True)
+        msg = await message.answer(
+            "❌ Ошибка при создании счёта. Попробуйте позже или свяжитесь с администратором."
+        )
         add_message_id(user_id, msg.message_id)
+
+        
 # Обработчик pre_checkout_query для Telegram Payments
 @dp.pre_checkout_query()
 async def process_pre_checkout_query(pre_checkout_query: types.PreCheckoutQuery):
