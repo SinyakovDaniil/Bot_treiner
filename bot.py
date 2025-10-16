@@ -384,7 +384,9 @@ async def cmd_subscribe(message: types.Message):
 
         # --- Подготовка счёта ---
         prices = [
-            LabeledPrice(label="Подписка на 1 месяц", amount=14900),  # 149.00 RUB в копейках
+            LabeledPrice(label="Подписка на 1 месяц", amount=49900),  # 149.00 RUB в копейках
+            LabeledPrice(label="Подписка на 6 месяцев", amount=249900),  # 149.00 RUB в копейках
+            LabeledPrice(label="Подписка на 12 месяцев", amount=499900),  # 149.00 RUB в копейках
         ]
 
         payload_data = {
