@@ -22,7 +22,16 @@ import re
 
 # --- Импортируем конфигурацию ---
 try:
-    from config import API_TOKEN, OPENROUTER_API_KEY, YOOMONEY_SHOP_ID, YOOMONEY_SECRET_KEY, WEBHOOK_URL, ADMIN_PASSWORD, ADMIN_IDS
+    from config import (
+        API_TOKEN,
+        OPENROUTER_API_KEY,
+        YOOMONEY_SHOP_ID,
+        YOOMONEY_SECRET_KEY,
+        YOOMONEY_PROVIDER_TOKEN,  # <-- Добавили сюда
+        WEBHOOK_URL,
+        ADMIN_PASSWORD,
+        ADMIN_IDS
+    )
 except ImportError:
     print("❌ Файл config.py не найден или не содержит всех необходимых переменных.")
     exit(1)
