@@ -363,11 +363,6 @@ async def cmd_subscribe(message: types.Message):
     logger.info(f"Получена команда /subscribe от пользователя {user_id}")
 
     # --- Проверка provider_token ---
-    # ВАЖНО: provider_token должен быть реальным, полученным через @BotFather
-    # Пример правильного токена: "123456789:PROVIDER_TOKEN_HERE"
-    # Для тестирования можно использовать тестовый токен от Telegram, но он тоже должен быть "настоящим"
-    
-    # ПРОВЕРКА: Если токен не задан или равен тестовой заглушке
     if not YOOMONEY_PROVIDER_TOKEN or YOOMONEY_PROVIDER_TOKEN in ["123456789:TEST:...", ""]:
         logger.error(f"❌ provider_token не настроен для пользователя {user_id}.")
         msg = await message.answer(
@@ -379,57 +374,53 @@ async def cmd_subscribe(message: types.Message):
     # --- Подготовка счёта ---
     prices = [
         LabeledPrice(label="Подписка на 1 месяц", amount=14900),  # 149.00 RUB в копейках
-        # LabeledPrice(label="Скидка", amount=-1000), # Пример скидки, убери, если не нужно
     ]
 
     payload_data = {
         "user_id": user_id,
         "subscription_type": "monthly"
     }
-    payload_json = json.dumps(payload_data) # Преобразуем данные в JSON строку для payload
+    payload_json = json.dumps(payload_data)
 
     # --- Отправка счёта через Telegram Payments ---
     try:
+        # Отправляем счёт
         sent_invoice = await bot.send_invoice(
             chat_id=user_id,
             title="Подписка на 1 месяц",
             description="Доступ к тренировкам и питанию на 30 дней",
-            payload=payload_json, # Уникальный идентификатор заказа, можно передавать данные
-            provider_token=YOOMONEY_PROVIDER_TOKEN, # Реальный токен от Telegram Payments
+            payload=payload_json,
+            provider_token=YOOMONEY_PROVIDER_TOKEN,
             currency="RUB",
             prices=prices,
-            start_parameter="subscribe_monthly", # Для deep-linking, если нужно
-            # photo_url="https://example.com/subscription_image.jpg", # Опционально
-            # photo_size=64,
-            # photo_width=800,
-            # photo_height=450,
-            # need_email=True, # Опционально
-            # send_email_to_provider=True, # Опционально
-            is_flexible=False # True, если нужно рассчитать доставку (не используется для подписки)
+            start_parameter="subscribe_monthly",
+            is_flexible=False
         )
         logger.info(f"✅ Счет на 1 месяц отправлен пользователю {user_id}. Message ID: {sent_invoice.message_id}")
 
-        # --- Предложение тестового периода (если не выдавался) ---
-        # Проверяем, выдавался ли тестовый период
+        # --- ОБЯЗАТЕЛЬНО: Отправляем подтверждающее сообщение ---
+        # Без этого aiogram может считать апдейт "не обработанным"
+        confirmation_msg = await message.answer("✅ Счёт на оплату отправлен. Проверь, пожалуйста, диалог с ботом.")
+        add_message_id(user_id, confirmation_msg.message_id)
+
+        # --- Предложение тестового периода ---
         if not has_trial_granted(user_id):
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🎁 Тестовый период (7 дней)", callback_data="trial_7")]
             ])
-            msg = await message.answer(
+            offer_msg = await message.answer(
                 "Хочешь попробовать бесплатно?",
                 reply_markup=keyboard
             )
-            add_message_id(user_id, msg.message_id)
-        else:
-            # Можно отправить другое сообщение, если нужно
-            pass
+            add_message_id(user_id, offer_msg.message_id)
 
     except Exception as e:
         logger.error(f"❌ Ошибка при отправке счёта пользователю {user_id}: {e}", exc_info=True)
-        msg = await message.answer(
+        error_msg = await message.answer(
             "❌ Ошибка при создании счёта. Попробуйте позже или свяжитесь с администратором."
         )
-        add_message_id(user_id, msg.message_id)
+        add_message_id(user_id, error_msg.message_id)
+
 
         
 # Обработчик pre_checkout_query для Telegram Payments
