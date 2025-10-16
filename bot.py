@@ -412,7 +412,7 @@ async def process_subscription_callback(callback_query: types.CallbackQuery):
 
     try:
         months = int(parts[1]) # "1" -> 1
-        price_rub_str = parts[2] # "49" или "49.0"
+        price_rub_str = int(parts[2]) # "49" или "49.0"
         # ✅ Корректное преобразование строки в int
         price_rub = int(float(price_rub_str)) # ✅ int(float("49")) -> 49, int(float("49.0")) -> 49
         price_kopecks = price_rub * 100 # ✅ 49 * 100 = 4900 (int)
