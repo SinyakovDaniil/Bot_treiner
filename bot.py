@@ -368,7 +368,7 @@ async def cmd_subscribe(message: types.Message):
     # Для тестирования можно использовать тестовый токен от Telegram, но он тоже должен быть "настоящим"
     
     # ПРОВЕРКА: Если токен не задан или равен тестовой заглушке
-    if not YOOMONEY_PROVIDER_TOKEN or YOOMONEY_PROVIDER_TOKEN in ["123456789:TEST:...", ""]:
+    if not YOOMONEY_PROVIDER_TOKEN or YOOMONEY_PROVIDER_TOKEN in ["390540012:LIVE:80188", ""]:
         logger.error(f"❌ provider_token не настроен для пользователя {user_id}.")
         msg = await message.answer(
             "❌ Оплата временно недоступна. Свяжитесь с администратором."
