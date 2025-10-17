@@ -469,8 +469,17 @@ async def process_pre_checkout_query(pre_checkout_query: types.PreCheckoutQuery)
     Всегда отвечаем OK, если не нужно проверять адрес/доставку.
     """
     logger.info(f"Получен PreCheckoutQuery от {pre_checkout_query.from_user.id}")
-    await pre_checkout_query.answer(ok=True)
-    logger.info(f"PreCheckoutQuery для {pre_checkout_query.from_user.id} одобрен")
+    try:
+        # Отвечаем сразу, без задержек
+        await pre_checkout_query.answer(ok=True)
+        logger.info(f"PreCheckoutQuery для {pre_checkout_query.from_user.id} одобрен")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при ответе на PreCheckoutQuery для {pre_checkout_query.from_user.id}: {e}", exc_info=True)
+        # Пытаемся отправить ответ, даже если произошла ошибка
+        try:
+            await pre_checkout_query.answer(ok=False, error_message="Произошла ошибка. Попробуйте позже.")
+        except:
+            pass # Игнорируем ошибку при отправке ответа
 
 # --- Обработчик успешной оплаты ---
 @dp.message(lambda m: m.content_type == 'successful_payment')
