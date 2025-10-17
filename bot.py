@@ -520,8 +520,7 @@ async def process_subscription_callback(callback_query: types.CallbackQuery):
         }
         payload_json = json.dumps(payload_data) # Преобразуем в JSON строку
 
-        # --- Отправка счёта через Telegram Payments ---
-        sent_invoice = await bot.send_invoice(
+        e(
             chat_id=user_id,
             title=f"Подписка на {months} месяцев",
             description=f"Доступ к тренировкам и питанию на {months} месяцев",
@@ -552,7 +551,7 @@ async def process_subscription_callback(callback_query: types.CallbackQuery):
         try:
             await bot.send_message(user_id, "❌ Ошибка при создании счёта. Попробуйте позже или свяжитесь с администратором.")
         except:
-             pass # Игнорируем ошибку при отправке сообщения об ошибке
+            pass # Игнорируем ошибку при отправке сообщения об ошибке
 
 # --- Обработчик pre_checkout_query для Telegram Payments ---
 @dp.pre_checkout_query()
