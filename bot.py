@@ -381,7 +381,7 @@ async def cmd_subscribe(message: types.Message):
 
     # --- Создаем клавиатуру с вариантами подписки ---
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="1 месяц - 49 руб", callback_data="sub_1_49")],
+        [InlineKeyboardButton(text="1 месяц - 100 руб", callback_data="sub_1_100")],
         [InlineKeyboardButton(text="6 месяцев - 2499 руб (415 руб/мес)", callback_data="sub_6_2499")],
         [InlineKeyboardButton(text="12 месяцев - 4499 руб (374 руб/мес)", callback_data="sub_12_4499")],
     ])
