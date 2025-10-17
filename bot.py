@@ -520,7 +520,7 @@ async def process_subscription_callback(callback_query: types.CallbackQuery):
         }
         payload_json = json.dumps(payload_data) # Преобразуем в JSON строку
 
-        e(
+        sent_invoice = await bot.send_invoice(
             chat_id=user_id,
             title=f"Подписка на {months} месяцев",
             description=f"Доступ к тренировкам и питанию на {months} месяцев",
