@@ -360,6 +360,66 @@ async def cmd_cancel(message: types.Message):
         msg = await message.answer("Нет активной анкеты.")
         add_message_id(user_id, msg.message_id)
 
+# --- Импорты ---
+import json
+import sqlite3
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile, LabeledPrice
+from openai import OpenAI
+import asyncio
+from datetime import datetime, timedelta
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+import matplotlib.pyplot as plt
+import io
+import hashlib
+from urllib.parse import urlencode
+from flask import Flask, request, render_template, redirect, url_for, session
+import threading
+import os
+import logging
+import traceback
+
+# --- Импортируем конфигурацию ---
+try:
+    from config import API_TOKEN, OPENROUTER_API_KEY, YOOMONEY_PROVIDER_TOKEN, WEBHOOK_URL, ADMIN_PASSWORD, ADMIN_IDS
+except ImportError:
+    print("❌ Файл config.py не найден или не содержит всех необходимых переменных.")
+    exit(1)
+
+# --- Настройка логирования ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# --- Инициализация ---
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher()
+
+# --- OpenAI клиент ---
+client = OpenAI(
+    api_key=OPENROUTER_API_KEY,
+    base_url='https://openrouter.ai/api/v1/'
+)
+
+MODEL = "microsoft/wizardlm-2-8x22b"
+
+# --- Подключение к SQLite ---
+conn = sqlite3.connect('trainer_bot.db', check_same_thread=False)
+cur = conn.cursor()
+
+# --- Создание таблиц ---
+# ... (ваш код создания таблиц) ...
+
+# --- Глобальные переменные ---
+user_states = {}
+scheduler = AsyncIOScheduler()
+reminder_times = {}
+loop = None
+
+# --- Вспомогательные функции ---
+# ... (ваш код вспомогательных функций: is_admin, get_user_count, add_subscription и т.д.) ...
+
 # --- ЮMoney оплата через Telegram Payments с выбором тарифа ---
 @dp.message(Command("subscribe"))
 async def cmd_subscribe(message: types.Message):
@@ -370,28 +430,55 @@ async def cmd_subscribe(message: types.Message):
     user_id = message.from_user.id
     logger.info(f"Получена команда /subscribe от пользователя {user_id}")
 
-    # --- Проверка provider_token ---
-    if not YOOMONEY_PROVIDER_TOKEN or YOOMONEY_PROVIDER_TOKEN in ["123456789:TEST:...", ""]:
-        logger.error(f"❌ provider_token не настроен для пользователя {user_id}.")
+    # --- ОБЯЗАТЕЛЬНО: Отправляем подтверждающее сообщение в самом начале ---
+    # Это гарантирует, что aiogram не посчитает апдейт "не обработанным"
+    try:
+        initial_msg = await message.answer("⏳ Обрабатываю запрос на подписку...")
+        add_message_id(user_id, initial_msg.message_id)
+    except Exception as e:
+        logger.error(f"❌ Ошибка при отправке начального сообщения пользователю {user_id}: {e}")
+
+    # --- Оборачиваем ВСЁ в try...except для отлова любых ошибок ---
+    try:
+        # --- Проверка provider_token ---
+        if not YOOMONEY_PROVIDER_TOKEN or YOOMONEY_PROVIDER_TOKEN in ["123456789:TEST:...", ""]:
+            logger.error(f"❌ provider_token не настроен для пользователя {user_id}.")
+            msg = await message.answer(
+                "❌ Оплата временно недоступна. Свяжитесь с администратором."
+            )
+            add_message_id(user_id, msg.message_id)
+            return # <-- ВАЖНО: return после отправки сообщения об ошибке
+
+        # --- Создаем клавиатуру с вариантами подписки ---
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="1 месяц - 100 руб", callback_data="sub_1_100")],
+            [InlineKeyboardButton(text="6 месяцев - 2499 руб (415 руб/мес)", callback_data="sub_6_2499")],
+            [InlineKeyboardButton(text="12 месяцев - 4499 руб (374 руб/мес)", callback_data="sub_12_4499")],
+        ])
+
+        # --- Отправляем сообщение с выбором тарифа ---
         msg = await message.answer(
-            "❌ Оплата временно недоступна. Свяжитесь с администратором."
+            "Выберите тарифный план:",
+            reply_markup=keyboard
         )
         add_message_id(user_id, msg.message_id)
-        return
 
-    # --- Создаем клавиатуру с вариантами подписки ---
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="1 месяц - 100 руб", callback_data="sub_1_100")],
-        [InlineKeyboardButton(text="6 месяцев - 2499 руб (415 руб/мес)", callback_data="sub_6_2499")],
-        [InlineKeyboardButton(text="12 месяцев - 4499 руб (374 руб/мес)", callback_data="sub_12_4499")],
-    ])
+        # --- ОБЯЗАТЕЛЬНО: Отправляем подтверждающее сообщение в самом конце ---
+        # Без этого aiogram может считать апдейт "не обработанным"
+        confirmation_msg = await message.answer("✅ Выберите тариф из списка выше.")
+        add_message_id(user_id, confirmation_msg.message_id)
 
-    # --- Отправляем сообщение с выбором тарифа ---
-    msg = await message.answer(
-        "Выберите тарифный план:",
-        reply_markup=keyboard
-    )
-    add_message_id(user_id, msg.message_id)
+    except Exception as e:
+        # --- Ловим и логируем ЛЮБУЮ ошибку ---
+        logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА в обработчике /subscribe для пользователя {user_id}: {e}", exc_info=True)
+        # Пытаемся отправить сообщение об ошибке пользователю
+        try:
+            await message.answer(
+                "❌ Произошла критическая ошибка при обработке команды. Попробуйте позже или свяжитесь с администратором."
+            )
+        except:
+            logger.warning(f"Не удалось отправить сообщение об ошибке пользователю {user_id}.")
+            pass # Игнорируем ошибку при отправке сообщения об ошибке
 
 # --- Обработчик выбора тарифа ---
 @dp.callback_query(lambda c: c.data.startswith("sub_"))
@@ -404,37 +491,36 @@ async def process_subscription_callback(callback_query: types.CallbackQuery):
     data = callback_query.data
     logger.info(f"Пользователь {user_id} выбрал тариф: {data}")
 
-    # --- Разбираем callback_data, например, "sub_1_49" ---
-    parts = data.split('_')
-    if len(parts) != 3:
-        await callback_query.answer("❌ Неверный формат данных.", show_alert=True)
-        return
-
+    # --- Оборачиваем ВСЁ в try...except для отлова любых ошибок ---
     try:
-        months = int(parts[1]) # "1" -> 1
-        price_rub_str = int(parts[2]) # "49" или "49.0"
-        # ✅ Корректное преобразование строки в int
-        price_rub = int(float(price_rub_str)) # ✅ int(float("49")) -> 49, int(float("49.0")) -> 49
-        price_kopecks = price_rub * 100 # ✅ 49 * 100 = 4900 (int)
-    except ValueError:
-        await callback_query.answer("❌ Ошибка обработки данных тарифа.", show_alert=True)
-        return
+        # --- Разбираем callback_data, например, "sub_1_100" ---
+        parts = data.split('_')
+        if len(parts) != 3:
+            await callback_query.answer("❌ Неверный формат данных.", show_alert=True)
+            return
 
-    # --- Подготовка счёта ---
-    prices = [
-        LabeledPrice(label=f"Подписка на {months} месяцев", amount=price_kopecks), # ✅ amount=int
-    ]
+        try:
+            months = int(parts[1]) # "1" -> 1
+            price_rub = int(parts[2]) # "100" -> 100
+            price_kopecks = price_rub * 100 # 100 * 100 = 10000 (int)
+        except ValueError:
+            await callback_query.answer("❌ Ошибка обработки данных тарифа.", show_alert=True)
+            return
 
-    # --- Формируем payload с информацией о тарифе ---
-    payload_data = {
-        "user_id": user_id,
-        "months": months,
-        "price_rub": price_rub # ✅ Передаём цену в рублях (int)
-    }
-    payload_json = json.dumps(payload_data) # Преобразуем в JSON строку
+        # --- Подготовка счёта ---
+        prices = [
+            LabeledPrice(label=f"Подписка на {months} месяцев", amount=price_kopecks), # amount=int
+        ]
 
-    # --- Отправка счёта через Telegram Payments ---
-    try:
+        # --- Формируем payload с информацией о тарифе ---
+        payload_data = {
+            "user_id": user_id,
+            "months": months,
+            "price_rub": price_rub
+        }
+        payload_json = json.dumps(payload_data) # Преобразуем в JSON строку
+
+        # --- Отправка счёта через Telegram Payments ---
         sent_invoice = await bot.send_invoice(
             chat_id=user_id,
             title=f"Подписка на {months} месяцев",
@@ -442,7 +528,7 @@ async def process_subscription_callback(callback_query: types.CallbackQuery):
             payload=payload_json, # Передаем данные о тарифе
             provider_token=YOOMONEY_PROVIDER_TOKEN, # Реальный токен от Telegram Payments
             currency="RUB",
-            prices=prices, # ✅ prices с amount=int
+            prices=prices, # prices с amount=int
             start_parameter=f"subscribe_{months}_months", # Для deep-linking
             is_flexible=False
         )
@@ -451,6 +537,14 @@ async def process_subscription_callback(callback_query: types.CallbackQuery):
         # --- Подтверждаем callback_query ---
         await callback_query.answer()
 
+        # --- ОБЯЗАТЕЛЬНО: Отправляем подтверждающее сообщение пользователю ---
+        # Без этого aiogram может считать апдейт "не обработанным"
+        confirmation_msg = await bot.send_message(
+            chat_id=user_id,
+            text=f"✅ Счет на оплату за {months} месяцев ({price_rub} руб) отправлен. Проверьте диалог с ботом для оплаты."
+        )
+        add_message_id(user_id, confirmation_msg.message_id)
+
     except Exception as e:
         logger.error(f"❌ Ошибка при отправке счёта пользователю {user_id}: {e}", exc_info=True)
         await callback_query.answer("❌ Ошибка при создании счёта. Попробуйте позже.", show_alert=True)
@@ -458,8 +552,7 @@ async def process_subscription_callback(callback_query: types.CallbackQuery):
         try:
             await bot.send_message(user_id, "❌ Ошибка при создании счёта. Попробуйте позже или свяжитесь с администратором.")
         except:
-            pass # Игнорируем ошибку при отправке сообщения об ошибке
-
+             pass # Игнорируем ошибку при отправке сообщения об ошибке
 
 # --- Обработчик pre_checkout_query для Telegram Payments ---
 @dp.pre_checkout_query()
@@ -517,6 +610,7 @@ async def process_successful_payment(message: types.Message):
         msg = await message.answer("✅ Оплата прошла успешно! Возникла ошибка при оформлении подписки, но деньги списаны. Свяжитесь с администратором.")
         add_message_id(user_id, msg.message_id)
         # TODO: Здесь желательно уведомить админа о проблеме
+
 
 @dp.callback_query(lambda c: c.data == "trial_7")
 async def process_trial_callback(callback_query: types.CallbackQuery):
